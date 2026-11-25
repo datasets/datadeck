@@ -1,3 +1,4 @@
+mod catalog;
 mod files;
 mod notes;
 use crate::library::{Bookmark, BookmarkDraft, Kind, Library};
@@ -95,6 +96,7 @@ enum PreviewState {
 pub struct LibraryView {
     entries: Vec<Entry>,
     selected: Option<i64>,
+    catalog_scroll: UniformListScrollHandle,
     form: Option<Form>,
     focus: FocusHandle,
     generation: u64,
@@ -144,6 +146,7 @@ impl LibraryView {
             expanded_links: false,
             entries: vec![],
             selected: None,
+            catalog_scroll: UniformListScrollHandle::new(),
             form: None,
             focus: cx.focus_handle().tab_stop(true),
             generation: 0,
@@ -227,15 +230,9 @@ impl LibraryView {
                         this.entries = refreshed;
                         this.entries
                             .sort_unstable_by_key(|e| std::cmp::Reverse(e.order()));
-                        if this
-                            .current()
-                            .is_none_or(|e| this.filter.is_some_and(|k| k != e.item.kind))
-                        {
-                            this.selected = this
-                                .entries
-                                .iter()
-                                .find(|e| this.filter.is_none_or(|k| e.item.kind == k))
-                                .map(|e| e.item.id);
+                        if this.selected.is_some() && this.current().is_none() {
+                            this.selected = None;
+                            this.focus_note = false;
                         }
                         if this
                             .form
@@ -550,11 +547,7 @@ impl LibraryView {
                             this.form = None;
                         }
                         if this.selected == Some(id) {
-                            this.selected = this
-                                .entries
-                                .iter()
-                                .find(|e| this.filter.is_none_or(|k| k == e.item.kind))
-                                .map(|e| e.item.id);
+                            this.selected = None;
                         }
                         this.refresh(cx);
                         this.message = Some("Bookmark removed".into());
@@ -580,23 +573,20 @@ impl LibraryView {
         cx.notify();
     }
 
-    fn choose_filter(&mut self, kind: Option<Kind>, cx: &mut Context<Self>) {
+    fn all_saved(&mut self, cx: &mut Context<Self>) {
         self.flush_notes(cx);
-        self.filter = kind;
-        if self
-            .current()
-            .is_none_or(|e| kind.is_some_and(|k| k != e.item.kind))
-        {
-            self.selected = self
-                .entries
-                .iter()
-                .find(|e| kind.is_none_or(|k| k == e.item.kind))
-                .map(|e| e.item.id);
-            self.form = None;
-            self.expanded_links = false;
-            self.prepare_note(cx);
-        }
+        self.last_capture += 1;
+        self.selected = None;
+        self.focus_note = false;
+        self.form = None;
+        self.confirming_remove = None;
         self.message = None;
+        cx.notify();
+    }
+
+    fn choose_filter(&mut self, kind: Option<Kind>, cx: &mut Context<Self>) {
+        self.filter = kind;
+        self.catalog_scroll = UniformListScrollHandle::new();
         cx.notify();
     }
 }

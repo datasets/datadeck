@@ -2,13 +2,13 @@
 
 Start with eight field observations. By the end you’ll have seven clean rows, three columns, and a SQL recipe you can run on another survey. The [input CSV](../examples/field-survey.csv) and [finished recipe](../examples/clean-field-survey.sql) are included.
 
-For a first build on macOS, run `scripts/package-macos.sh` in the repository root. [macOS installation instructions](../README.md#run-on-macos).
+For a first build on macOS, run `scripts/package-macos.sh` in the repository root. [macOS installation instructions](../README.md#install-locally-on-macos).
 
 Watch the [app overview](videos/overview.mp4), [inspection tutorial](videos/inspect.mp4), or [cleaning and replay tutorial](videos/clean.mp4). Each video has narration and optional English captions.
 
 ## 1. Open the survey
 
-From the Library or an open table, choose **Open file**. In the empty dataset viewer, choose **Choose file…**. Select `examples/field-survey.csv`. From the repository root, the equivalent command is:
+From Saved, choose **Open data → File…**. From an open table, choose **Open file**. Select `examples/field-survey.csv`. From the repository root, the equivalent command is:
 
 ```sh
 ./target/release/datadeck examples/field-survey.csv

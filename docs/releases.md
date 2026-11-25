@@ -1,6 +1,6 @@
 # Install DataDeck on macOS
 
-When a tagged release is available, download the disk image for your Mac. Before the first signed release, you can [build and run DataDeck from source](../README.md#run-on-macos). Choose **arm64** if About This Mac lists an Apple chip, or **x86_64** if it lists an Intel processor. Release builds require macOS 15 or later. Open the disk image, drag **DataDeck** into **Applications**, then eject the image and launch DataDeck. Public downloads carry a Developer ID signature and an Apple notarization ticket. [DataDeck releases](https://github.com/datasets/datadeck/releases)
+When a tagged release is available, download the disk image for your Mac. Before the first signed release, you can [build and run DataDeck from source](../README.md#install-locally-on-macos). Choose **arm64** if About This Mac lists an Apple chip, or **x86_64** if it lists an Intel processor. Release builds require macOS 15 or later. Open the disk image, drag **DataDeck** into **Applications**, then eject the image and launch DataDeck. Public downloads carry a Developer ID signature and an Apple notarization ticket. [DataDeck releases](https://github.com/datasets/datadeck/releases)
 
 On a Mac with the default Gatekeeper settings, a signed and notarized release opens with the normal first-launch confirmation for internet downloads. Users can keep their security settings enabled. Managed Macs may have additional installation policies. [Apple’s guide to opening downloaded apps](https://support.apple.com/en-us/102445)
 

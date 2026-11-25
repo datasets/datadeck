@@ -33,6 +33,9 @@ actions!(
         OpenFile,
         OpenFolder,
         OpenUrl,
+        FocusLocation,
+        OpenInboxFolder,
+        OpenExample,
         PasteData,
         ShowQuery,
         LargerType,
@@ -204,6 +207,8 @@ impl Deck {
             this.focus.focus(window);
             if let UrlEvent::Open(value) = event {
                 this.open_location(value.clone(), cx);
+            } else if this.library_open {
+                this.library.read(cx).focus(window);
             }
             cx.notify();
         })
@@ -391,12 +396,15 @@ impl Deck {
         self.focus.focus(window);
         self.read_source(CLIPBOARD.into(), None, false, cx);
     }
+    fn focus_location(&mut self, _: &FocusLocation, w: &mut Window, cx: &mut Context<Self>) {
+        if self.library_open && !self.url_open {
+            self.library.update(cx, |view, cx| view.focus_url(w, cx));
+        } else {
+            self.url(&OpenUrl, w, cx);
+        }
+    }
     fn url(&mut self, _: &OpenUrl, w: &mut Window, cx: &mut Context<Self>) {
         self.link_probe = None;
-        if self.library_open {
-            self.library.update(cx, |view, cx| view.focus_url(w, cx));
-            return;
-        }
         self.query_open = false;
         self.url_open = true;
         self.resources_open = false;
@@ -729,7 +737,7 @@ impl Render for Deck {
                             .text_size(px(14.))
                             .font_weight(FontWeight::MEDIUM)
                             .child(if self.library_open {
-                                "DataDeck / Library".into()
+                                "DataDeck".into()
                             } else if opened {
                                 caption(&self.source)
                             } else {
@@ -737,27 +745,61 @@ impl Render for Deck {
                             }),
                     ),
             );
-        toolbar = toolbar.child(
-            button(
-                "library-toggle",
-                if self.library_open {
-                    if opened {
-                        "Back to viewer"
-                    } else {
-                        "Dataset viewer"
-                    }
-                } else {
-                    "Library"
-                },
-                false,
-            )
-            .on_click(cx.listener(|s, _, window, cx| s.toggle_library(&ShowLibrary, window, cx))),
-        );
-        if self.library_open && !opened {
+        if !self.library_open || opened {
             toolbar = toolbar.child(
-                button("library-open-file", "Open file", false)
-                    .on_click(cx.listener(|s, _, w, cx| s.choose(&OpenFile, w, cx))),
+                button(
+                    "library-toggle",
+                    if self.library_open {
+                        "Back to table"
+                    } else {
+                        "Saved"
+                    },
+                    false,
+                )
+                .on_click(cx.listener(|s, _, w, cx| s.toggle_library(&ShowLibrary, w, cx))),
             );
+        }
+        if self.library_open {
+            let segment = |id: &'static str, label: &'static str| {
+                div()
+                    .id(id)
+                    .px_3()
+                    .py_1()
+                    .text_size(px(12.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(0xf2f2f2)))
+                    .child(label)
+            };
+            let rule = || div().w(px(1.)).h(px(14.)).bg(rgb(LINE));
+            toolbar = toolbar
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_size(px(11.))
+                        .text_color(rgb(MUTED))
+                        .child("Open data"),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .border_1()
+                        .border_color(rgb(LINE))
+                        .rounded_sm()
+                        .child(
+                            segment("file", "File…")
+                                .on_click(cx.listener(|s, _, w, cx| s.choose(&OpenFile, w, cx))),
+                        )
+                        .child(rule())
+                        .child(segment("folder", "Folder…").on_click(
+                            cx.listener(|s, _, w, cx| s.choose_folder(&OpenFolder, w, cx)),
+                        ))
+                        .child(rule())
+                        .child(
+                            segment("url", "URL…")
+                                .on_click(cx.listener(|s, _, w, cx| s.url(&OpenUrl, w, cx))),
+                        ),
+                );
         }
         if opened && !self.library_open {
             toolbar = toolbar
@@ -798,6 +840,11 @@ impl Render for Deck {
             .on_action(cx.listener(Self::choose))
             .on_action(cx.listener(Self::choose_folder))
             .on_action(cx.listener(Self::url))
+            .on_action(cx.listener(Self::focus_location))
+            .on_action(cx.listener(|s, _: &OpenInboxFolder, _, cx| {
+                s.library.update(cx, |v, cx| v.open_inbox(cx))
+            }))
+            .on_action(cx.listener(|s, _: &OpenExample, _, cx| s.load(EXAMPLE.into(), None, cx)))
             .on_action(cx.listener(Self::query))
             .on_action(
                 cx.listener(|s, _: &EditorialTheme, _, cx| s.set_theme(Theme::Editorial, cx)),
@@ -1122,7 +1169,7 @@ fn main() {
             KeyBinding::new("secondary-shift-o", OpenFolder, None),
             KeyBinding::new("secondary-shift-b", ShowLibrary, None),
             KeyBinding::new("secondary-o", OpenFile, None),
-            KeyBinding::new("secondary-l", OpenUrl, None),
+            KeyBinding::new("secondary-l", FocusLocation, None),
             KeyBinding::new("secondary-v", PasteData, Some("DataDeck && !DatasetInput")),
             KeyBinding::new("secondary-k", ShowQuery, None),
             KeyBinding::new("secondary-w", CloseWindow, None),
@@ -1144,6 +1191,7 @@ fn main() {
                     MenuItem::action("Open Folder…", OpenFolder),
                     MenuItem::action("Open URL…", OpenUrl),
                     MenuItem::action("Paste Data", PasteData),
+                    MenuItem::action("Open Field Notes Example", OpenExample),
                     MenuItem::action("Query", ShowQuery),
                     MenuItem::action("Close Window", CloseWindow),
                 ],
@@ -1159,6 +1207,8 @@ fn main() {
                     MenuItem::separator(),
                     MenuItem::action("Editorial Theme", EditorialTheme),
                     MenuItem::action("Monochrome Theme", MonochromeTheme),
+                    MenuItem::separator(),
+                    MenuItem::action("Open Inbox Folder", OpenInboxFolder),
                 ],
             },
             Menu {

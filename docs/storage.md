@@ -2,7 +2,7 @@
 
 ## The capture inbox
 
-DataDeck keeps one Markdown file per captured web link in `~/.config/datadeck/inbox/`. If `XDG_CONFIG_HOME` points to an absolute directory, the inbox is `$XDG_CONFIG_HOME/datadeck/inbox/`. Run `datadeck --inbox-path` to print the path, or choose **Open inbox folder ↗** in the Library. For a single capture, choose **Details → Open Markdown file ↗**. You can copy the inbox, including its `assets/` directory, to back it up or work with it on another computer.
+DataDeck keeps one Markdown file per captured web link in `~/.config/datadeck/inbox/`. If `XDG_CONFIG_HOME` points to an absolute directory, the inbox is `$XDG_CONFIG_HOME/datadeck/inbox/`. Run `datadeck --inbox-path` to print the path, or choose **View → Open Inbox Folder** in the menu bar. For a single capture, choose **Details → Open Markdown file ↗**. You can copy the inbox, including its `assets/` directory, to back it up or work with it on another computer.
 
 To add a capture from another tool, create a UTF-8 file such as `climate-notes.md` in that directory:
 

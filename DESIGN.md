@@ -24,6 +24,8 @@ Use SQL projection for choosing columns, functions such as trim for cleaning tex
 
 ## Bookmark Library
 
+Saved shows the newest captures in a full-width list on launch. File, Folder and URL open data directly from the title bar. A saved title opens its notes, and All saved returns to the list.
+
 Pasting a link commits it to the local capture log. A sentence pasted with the URL becomes the note. The reader can type or dictate immediately while workers retrieve the title, thumbnail and linked resources. Metadata and notes have independent writes so a slow preview cannot replace a paragraph. The log orders entries by capture time, including repeat captures. Selecting an entry or editing its note preserves the order. Links to data open in the viewer, and page, chart and image links open in the browser. Switching surfaces retains the open table and query.
 
 Each capture is a Markdown file. The Library reads the same YAML frontmatter and note body that the user sees in a text editor. Thumbnails use relative paths so a copied inbox stays portable. Only the visible Library monitors the inbox for external changes.

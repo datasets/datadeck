@@ -77,14 +77,28 @@ impl LibraryView {
 
     pub fn leave(&mut self, cx: &mut Context<Self>) {
         self.file_watch = None;
-        self.flush_notes(cx);
+        self.all_saved(cx);
     }
 
-    pub(super) fn open_inbox(&mut self, cx: &mut Context<Self>) {
+    pub fn open_inbox(&mut self, cx: &mut Context<Self>) {
         self.flush_notes(cx);
-        if let Some(store) = &self.database {
-            cx.open_with_system(store.inbox_path());
-        }
+        let path = crate::library::inbox_path();
+        let job = cx.background_executor().spawn(async move {
+            let path = path?;
+            std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+            Ok::<_, String>(path)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |this, cx| match result {
+                Ok(path) => cx.open_with_system(&path),
+                Err(message) => {
+                    this.message = Some(message);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(super) fn open_markdown(&mut self, id: i64, cx: &mut Context<Self>) {

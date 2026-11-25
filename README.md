@@ -1,27 +1,38 @@
 # DataDeck
 
-DataDeck is a native GPUI desktop viewer for CSV, TSV, Parquet and Excel. Open a local file or paste its HTTP(S) download URL, inspect a distribution beside the table, and query the open dataset. Choose **Explore the field notes example** in the empty **Dataset viewer** to try it with a small fictional survey.
+DataDeck is a native GPUI desktop app for saving data stories and exploring CSV, TSV, Parquet and Excel. It opens to **Saved**, with your most recent links first. Paste a link to save it, click a saved title to revisit its notes, or choose **Open data → File…, Folder…, or URL…** to explore a dataset. For a small sample, choose **File → Open Field Notes Example**.
 
 [Start the pictured cleaning tutorial](docs/quickstart.md) · [Watch the overview](docs/videos/overview.mp4) · [Watch inspection](docs/videos/inspect.mp4) · [Watch cleaning and replay](docs/videos/clean.mp4)
 
-## Install a tagged release on macOS
+![The Saved landing page with recent data stories, the capture field and File, Folder and URL controls](docs/images/saved.png)
 
-Open the [DataDeck releases page](https://github.com/datasets/datadeck/releases), choose the macOS 15+ disk image for your Mac (Apple silicon or Intel), open it, and drag DataDeck into Applications. Published disk images require Developer ID signing and Apple notarization. The [release guide](docs/releases.md) covers version tags, GitHub Actions, signing credentials, and preview builds. Until the first signed release is published, build from source below.
+## Install locally on macOS
 
-## Run on macOS
-
-Install Rust and Xcode, then run from the repository root:
+From a checkout, with Rust and Xcode installed, build the app and copy it to your own Applications folder. This install runs without administrator privileges.
 
 ```sh
-cargo run --locked
+scripts/package-macos.sh
+mkdir -p "$HOME/Applications"
+ditto target/release/DataDeck.app "$HOME/Applications/DataDeck.app"
+open "$HOME/Applications/DataDeck.app"
 ```
 
-To build a Finder application, run `scripts/package-macos.sh` and open `target/release/DataDeck.app`. For a development bundle, use `scripts/package-macos.sh --dev`. You can also open a dataset directly:
+Open **DataDeck** from Spotlight or Finder on subsequent launches. To update a local build, quit DataDeck and repeat the commands. Your saved links live separately in your Markdown inbox.
+
+For the optional terminal command, link the installed executable into a directory on your PATH. If you use `~/.local/bin`, run the following once.
 
 ```sh
-cargo run --locked -- examples/field-notes.csv
-cargo run --locked -- https://datahub.io/core/co2-ppm/_r/-/data/co2-annmean-mlo.csv
+mkdir -p "$HOME/.local/bin"
+ln -s "$HOME/Applications/DataDeck.app/Contents/MacOS/datadeck" "$HOME/.local/bin/datadeck"
+export PATH="$HOME/.local/bin:$PATH"
+datadeck --help
 ```
+
+To run from a checkout during development, use `cargo run --locked` or `cargo run --locked -- examples/field-notes.csv`.
+
+### Download a release
+
+The first public macOS 15+ disk images require Apple signing and notarization. Once published, choose Apple silicon or Intel on the [releases page](https://github.com/datasets/datadeck/releases), open the disk image, and drag DataDeck into Applications. The [release guide](docs/releases.md) covers signing, tags and GitHub Actions preview builds.
 
 ![DataDeck displaying the field survey](docs/images/survey-rows.png)
 
@@ -30,7 +41,7 @@ cargo run --locked -- https://datahub.io/core/co2-ppm/_r/-/data/co2-annmean-mlo.
 The release build places `datadeck` in `target/release/`. Run the commands below from the repository root after building with `scripts/package-macos.sh`. For the Finder bundle, the same executable is `DataDeck.app/Contents/MacOS/datadeck`.
 
 ```sh
-./target/release/datadeck                                        # Open your recent Library
+./target/release/datadeck                                        # Show your saved links
 ./target/release/datadeck --library                              # Browse saved web links
 ./target/release/datadeck --inbox-path                           # Print the Markdown inbox directory
 ./target/release/datadeck examples/field-survey.csv              # Open one file
@@ -53,15 +64,15 @@ The large notes area is ready while the spinner is running. Type, paste several 
 
 In the background DataDeck reads the page title, looks for preview images, chart links and embeds, and finds linked CSV, TSV, Excel and Parquet files. Choose a discovered data file to open it in the viewer. Images, visualizations and **Open page** take you to the original in your browser. The preview uses the HTML the site returns. A site that generates links only after running JavaScript may supply fewer results.
 
-Reopen DataDeck to see the newest captures first. Capturing a URL again moves that entry to the top and keeps its notes. Reading or editing an older note leaves its place in the log intact. Each capture is a Markdown file under `~/.config/datadeck/inbox/`, or `$XDG_CONFIG_HOME/datadeck/inbox/` when you set an absolute XDG configuration directory. The YAML frontmatter holds the link and page metadata, and the body contains your note. Cached thumbnails live in `assets/`. [Read the file format, migration details, and parsing example](docs/storage.md). Finder internet shortcuts (`.webloc`) work too.
+Choose **← All saved** to return to the list. Reopen DataDeck to see the newest captures first. Capturing a URL again moves that entry to the top and keeps its notes. Reading or editing an older note leaves its place in the log intact. Each capture is a Markdown file under `~/.config/datadeck/inbox/`, or `$XDG_CONFIG_HOME/datadeck/inbox/` when you set an absolute XDG configuration directory. The YAML frontmatter holds the link and page metadata, and the body contains your note. Cached thumbnails live in `assets/`. [Read the file format, migration details, and parsing example](docs/storage.md). Finder internet shortcuts (`.webloc`) work too.
 
-![The capture log with notes, a page preview and discovered links](docs/images/bookmark-library.png)
+![A saved data story with notes, a page preview and discovered links](docs/images/bookmark-library.png)
 
 The walkthrough uses a local example page with a temperature chart from Our World in Data. [Watch the narrated capture walkthrough](docs/videos/library.mp4) · [Original chart and credits](https://ourworldindata.org/grapher/temperature-anomaly).
 
 ## Open and inspect
 
-Drop a file or directory on the window, choose **Open file** (⌘O) or **Open folder** (⇧⌘O), or paste a direct HTTP(S) download link into **Open URL** (⌘L). DataHub resource links work directly. The planned dataset-page browser and publishing flow are described in [DataHub integration](docs/datahub.md).
+Drop a file or directory on the window, choose **Open file** (⌘O) or **Open folder** (⇧⌘O), or paste a direct HTTP(S) download link into **Open data → URL…** (⌘L in the viewer). DataHub resource links work directly. The planned dataset-page browser and publishing flow are described in [DataHub integration](docs/datahub.md).
 
 **CSV and TSV.** DataDeck samples the opening records to guess comma, semicolon, tab or pipe delimiters and whether the first record contains headers. Quoted multiline fields, UTF-8 BOMs and Excel-style `sep=` directives are supported. Short rows have empty trailing cells. Long rows add named columns even when they appear late in a file. The status bar indicates extra fields. Click **CSV settings** to correct the delimiter or header guess, or choose **Detect again**. For ambiguous all-text data, check the header setting.
 

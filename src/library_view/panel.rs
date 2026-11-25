@@ -39,7 +39,7 @@ fn option(id: ElementId, text: &'static str, chosen: bool) -> Stateful<Div> {
 }
 
 impl LibraryView {
-    fn capture_line(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn capture_line(&self, cx: &mut Context<Self>) -> Div {
         div()
             .w_full()
             .flex()
@@ -58,149 +58,6 @@ impl LibraryView {
                         }
                     },
                 )),
-            )
-    }
-
-    fn inbox_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        option("open-inbox-folder".into(), "Open inbox folder ↗", false)
-            .on_click(cx.listener(|this, _, _, cx| this.open_inbox(cx)))
-    }
-
-    fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> Div {
-        let visible: Vec<_> = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| self.filter.is_none_or(|k| k == e.item.kind))
-            .map(|(i, _)| i)
-            .collect();
-        let count = visible.len();
-        div()
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .flex_none()
-            .w(px(if compact { 220. } else { 304. }))
-            .h_full()
-            .border_r_1()
-            .border_color(rgb(LINE))
-            .child(
-                div()
-                    .px_4()
-                    .pt_5()
-                    .pb_3()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(17.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Capture log"),
-                    )
-                    .child(
-                        div()
-                            .font_family(MONO)
-                            .text_size(px(11.))
-                            .text_color(rgb(MUTED))
-                            .child(self.entries.len().to_string()),
-                    ),
-            )
-            .child(
-                div().px(px(9.)).pb_3().flex().flex_wrap().children(
-                    std::iter::once(None)
-                        .chain(Kind::ALL.into_iter().map(Some))
-                        .enumerate()
-                        .map(|(i, k)| {
-                            option(
-                                ("library-filter", i).into(),
-                                k.map(Kind::label).unwrap_or("All"),
-                                self.filter == k,
-                            )
-                            .on_click(cx.listener(move |this, _, _, cx| this.choose_filter(k, cx)))
-                        }),
-                ),
-            )
-            .child(div().h(px(1.)).bg(rgb(LINE)))
-            .when(count > 0, |s| {
-                s.child(
-                    uniform_list(
-                        "saved-links",
-                        count,
-                        cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
-                            range
-                                .map(|index| {
-                                    let entry = &this.entries[visible[index]];
-                                    let id = entry.item.id;
-                                    let active = this.selected == Some(id) && this.form.is_none();
-                                    div()
-                                        .id(("bookmark", id as usize))
-                                        .w_full()
-                                        .h(px(64.))
-                                        .px_4()
-                                        .py_2()
-                                        .flex()
-                                        .flex_col()
-                                        .justify_center()
-                                        .gap(px(3.))
-                                        .border_l_2()
-                                        .border_color(rgb(if active { INK } else { PAPER }))
-                                        .bg(rgb(if active { 0xf2f2f0 } else { PAPER }))
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(rgb(0xf5f5f3)))
-                                        .child(
-                                            div()
-                                                .w_full()
-                                                .truncate()
-                                                .text_size(px(13.))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child(entry.title().to_owned()),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .overflow_hidden()
-                                                .child(tag(entry.item.kind))
-                                                .child(
-                                                    div()
-                                                        .font_family(MONO)
-                                                        .text_size(px(10.))
-                                                        .text_color(rgb(0x696969))
-                                                        .truncate()
-                                                        .child(entry.item.capture_label.clone()),
-                                                ),
-                                        )
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            this.show(id, cx);
-                                            this.focus(window);
-                                        }))
-                                })
-                                .collect()
-                        }),
-                    )
-                    .flex_1()
-                    .w_full()
-                    .min_h_0(),
-                )
-            })
-            .when(count == 0 && self.ready, |s| {
-                s.child(div().p_4().text_size(px(12.)).text_color(rgb(MUTED)).child(
-                    if self.filter.is_some() {
-                        "No saved links in this category."
-                    } else {
-                        "Drop a web link here to save it."
-                    },
-                ))
-            })
-            .child(
-                div()
-                    .mt_auto()
-                    .p_3()
-                    .border_t_1()
-                    .border_color(rgb(LINE))
-                    .child(self.inbox_button(cx)),
             )
     }
 
@@ -458,7 +315,7 @@ impl LibraryView {
         let preview_url = url.clone();
         let id = item.id;
         div()
-            .max_w(px(660.))
+            .max_w(px(904.))
             .w_full()
             .flex()
             .flex_col()
@@ -607,107 +464,85 @@ impl Render for LibraryView {
         {
             note.editor.focus_handle(cx).focus(window);
         }
-        let empty = self.entries.is_empty();
-        let panel = if let Some(form) = &self.form {
-            self.form_panel(form, cx)
-        } else if let Some(entry) = self.current() {
-            self.detail(entry, compact, cx)
-        } else if empty {
-            div()
-                .size_full()
-                .flex()
-                .justify_center()
-                .items_center()
-                .child(
-                    div()
-                        .max_w(px(480.))
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .gap_4()
-                        .child(
-                            div()
-                                .text_size(px(32.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Paste a link"),
-                        )
-                        .child(div().text_size(px(14.)).text_color(rgb(MUTED)).child(
-                            "Include a note above or below the URL, or add one as the page loads.",
-                        ))
-                        .child(self.capture_line(cx))
-                        .when(self.database.is_some(), |s| {
-                            s.child(div().flex().justify_start().child(self.inbox_button(cx)))
-                        })
-                        .when_some(
-                            self.message.clone().or_else(|| self.file_warning.clone()),
-                            |s, message| {
-                                s.child(
-                                    div()
-                                        .font_family(MONO)
-                                        .text_size(px(11.))
-                                        .text_color(rgb(MUTED))
-                                        .child(message),
-                                )
-                            },
-                        ),
-                )
-        } else {
-            div()
-                .text_color(rgb(MUTED))
-                .child("No captures in this category.")
-        };
-        div()
+        let message = self.message.clone().or_else(|| self.file_warning.clone());
+        let frame = div()
             .size_full()
             .min_h_0()
             .min_w_0()
             .flex()
+            .flex_col()
             .text_color(rgb(INK))
             .bg(rgb(PAPER))
             .key_context("Library")
             .track_focus(&self.focus)
             .on_action(cx.listener(|_, _: &NextField, w, _| w.focus_next()))
-            .on_action(cx.listener(|_, _: &PreviousField, w, _| w.focus_prev()))
-            .when(!empty, |s| s.child(self.sidebar(compact, cx)))
-            .child(
-                div()
-                    .id("library-details")
-                    .min_w_0()
-                    .min_h_0()
-                    .flex_1()
-                    .h_full()
-                    .overflow_y_scroll()
-                    .px(px(if compact { 20. } else { 34. }))
-                    .py(px(24.))
-                    .when(!empty, |s| {
-                        s.child(
+            .on_action(cx.listener(|_, _: &PreviousField, w, _| w.focus_prev()));
+        if self.selected.is_none() && self.form.is_none() {
+            return frame.child(self.catalog(compact, message, cx));
+        }
+        let panel = if let Some(form) = &self.form {
+            self.form_panel(form, cx)
+        } else if let Some(entry) = self.current() {
+            self.detail(entry, compact, cx)
+        } else {
+            div()
+        };
+        frame.child(
+            div()
+                .id("library-details")
+                .size_full()
+                .min_h_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .items_center()
+                .px(px(if compact { 24. } else { 48. }))
+                .py(px(26.))
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(904.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_4()
+                        .pb_4()
+                        .mb_5()
+                        .border_b_1()
+                        .border_color(rgb(LINE))
+                        .child(
                             div()
-                                .max_w(px(660.))
-                                .w_full()
-                                .pb_4()
-                                .mb_4()
-                                .border_b_1()
-                                .border_color(rgb(LINE))
-                                .child(self.capture_line(cx)),
+                                .id("all-saved")
+                                .cursor_pointer()
+                                .text_size(px(13.))
+                                .text_color(rgb(MUTED))
+                                .hover(|s| s.text_color(rgb(INK)).underline())
+                                .child("← All saved")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.all_saved(cx);
+                                    this.focus(window);
+                                })),
                         )
-                    })
-                    .child(panel)
-                    .when_some(
-                        self.message
-                            .clone()
-                            .or_else(|| self.file_warning.clone())
-                            .filter(|_| !empty),
-                        |s, message| {
-                            s.child(
-                                div()
-                                    .pt_3()
-                                    .text_color(rgb(MUTED))
-                                    .font_family(MONO)
-                                    .text_size(px(11.))
-                                    .child(message),
-                            )
-                        },
-                    ),
-            )
+                        .child(
+                            div()
+                                .w(px(if compact { 225. } else { 300. }))
+                                .child(self.capture_line(cx)),
+                        ),
+                )
+                .child(div().w_full().max_w(px(904.)).child(panel))
+                .when_some(message, |s, text| {
+                    s.child(
+                        div()
+                            .w_full()
+                            .max_w(px(904.))
+                            .pt_3()
+                            .font_family(MONO)
+                            .text_size(px(11.))
+                            .text_color(rgb(MUTED))
+                            .child(text),
+                    )
+                }),
+        )
     }
 }
 
