@@ -32,6 +32,7 @@ The release build places `datadeck` in `target/release/`. Run the commands below
 ```sh
 ./target/release/datadeck                                        # Open your recent Library
 ./target/release/datadeck --library                              # Browse saved web links
+./target/release/datadeck --inbox-path                           # Print the Markdown inbox directory
 ./target/release/datadeck examples/field-survey.csv              # Open one file
 ./target/release/datadeck examples                               # Browse a folder or checkout
 ./target/release/datadeck /path/to/datapackage.yml               # Open a package
@@ -52,11 +53,11 @@ The large notes area is ready while the spinner is running. Type, paste several 
 
 In the background DataDeck reads the page title, looks for preview images, chart links and embeds, and finds linked CSV, TSV, Excel and Parquet files. Choose a discovered data file to open it in the viewer. Images, visualizations and **Open page** take you to the original in your browser. The preview uses the HTML the site returns. A site that generates links only after running JavaScript may supply fewer results.
 
-Reopen DataDeck to see the newest captures first. Capturing a URL again moves that entry to the top and keeps its notes. Reading or editing an older note leaves its place in the log intact. The URL, notes, discovered links and cached thumbnail live in `~/Library/Application Support/DataDeck/library.sqlite3` on macOS. Finder internet shortcuts (`.webloc`) work too.
+Reopen DataDeck to see the newest captures first. Capturing a URL again moves that entry to the top and keeps its notes. Reading or editing an older note leaves its place in the log intact. Each capture is a Markdown file under `~/.config/datadeck/inbox/`, or `$XDG_CONFIG_HOME/datadeck/inbox/` when you set an absolute XDG configuration directory. The YAML frontmatter holds the link and page metadata, and the body contains your note. Cached thumbnails live in `assets/`. [Read the file format, migration details, and parsing example](docs/storage.md). Finder internet shortcuts (`.webloc`) work too.
 
 ![The capture log with notes, a page preview and discovered links](docs/images/bookmark-library.png)
 
-[Watch the narrated capture walkthrough](docs/videos/library.mp4).
+The walkthrough uses a local example page with a temperature chart from Our World in Data. [Watch the narrated capture walkthrough](docs/videos/library.mp4) · [Original chart and credits](https://ourworldindata.org/grapher/temperature-anomaly).
 
 ## Open and inspect
 
