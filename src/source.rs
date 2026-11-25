@@ -108,6 +108,7 @@ enum Purpose {
     Url,
     Query,
     Field(&'static str),
+    Capture,
 }
 
 pub struct UrlInput {
@@ -143,7 +144,7 @@ fn byte_offset(text: &str, utf16: usize, round_up: bool) -> usize {
     text.len()
 }
 
-fn byte_range(text: &str, range: Range<usize>) -> Range<usize> {
+pub(crate) fn byte_range(text: &str, range: Range<usize>) -> Range<usize> {
     let start = byte_offset(text, range.start, range.is_empty());
     if range.is_empty() {
         return start..start;
@@ -170,6 +171,39 @@ impl UrlInput {
         Self {
             purpose: Purpose::Query,
             ..Self::new(cx)
+        }
+    }
+
+    pub fn capture(cx: &mut Context<Self>) -> Self {
+        Self {
+            purpose: Purpose::Capture,
+            ..Self::field("", cx)
+        }
+    }
+
+    fn capture_commit(
+        &mut self,
+        utf16: Option<Range<usize>>,
+        value: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.purpose != Purpose::Capture {
+            return false;
+        }
+        let selection = utf16
+            .map(|r| byte_range(&self.text, r))
+            .or_else(|| self.marked.clone())
+            .unwrap_or_else(|| self.selection());
+        let Some(candidate) = crate::capture::insert_capture(&self.text, selection, value) else {
+            return false;
+        };
+        cx.emit(UrlEvent::Open(candidate));
+        true
+    }
+
+    pub fn paste_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if !self.capture_commit(None, text, cx) {
+            self.replace(None, text.trim_end_matches(['\r', '\n']), cx);
         }
     }
 
@@ -280,7 +314,8 @@ impl UrlInput {
                     cx.notify();
                 }
             }
-        } else if !value.is_empty() || matches!(self.purpose, Purpose::Field(_)) {
+        } else if !value.is_empty() || matches!(self.purpose, Purpose::Field(_) | Purpose::Capture)
+        {
             cx.emit(UrlEvent::Open(value.to_owned()));
         }
     }
@@ -339,6 +374,9 @@ impl EntityInputHandler for UrlInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if value.chars().count() > 1 && self.capture_commit(range.clone(), value, cx) {
+            return;
+        }
         self.replace(range, &value.replace(['\r', '\n'], " "), cx);
     }
 
@@ -392,6 +430,7 @@ impl Render for UrlInput {
             Purpose::Url => ("https://example.org/data.parquet", "Open"),
             Purpose::Query => ("Ask about the data or write SQL…", "Run"),
             Purpose::Field(hint) => (hint, ""),
+            Purpose::Capture => ("Paste a link…", ""),
         };
         let canvas = canvas(
             |_, _, _| (),
@@ -511,6 +550,7 @@ impl Render for UrlInput {
                 Purpose::Url => "url-editor",
                 Purpose::Query => "query-editor",
                 Purpose::Field(hint) => hint,
+                Purpose::Capture => "library-link-input",
             })
             .key_context("DatasetInput")
             .track_focus(&self.focus)
@@ -523,7 +563,7 @@ impl Render for UrlInput {
             }))
             .on_action(cx.listener(|s, _: &Paste, _, cx| {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                    s.replace(None, text.trim_end_matches(['\r', '\n']), cx);
+                    s.paste_text(&text, cx);
                 }
             }))
             .on_action(cx.listener(|s, _: &SelectAll, _, cx| {
@@ -543,13 +583,16 @@ impl Render for UrlInput {
             .w_full()
             .flex()
             .flex_col()
-            .when(!matches!(self.purpose, Purpose::Field(_)), |s| {
-                s.px_4()
-                    .py(px(4.))
-                    .border_b_1()
-                    .border_color(rgb(0xe2e2e2))
-                    .bg(rgb(0xf8f8f8))
-            })
+            .when(
+                !matches!(self.purpose, Purpose::Field(_) | Purpose::Capture),
+                |s| {
+                    s.px_4()
+                        .py(px(4.))
+                        .border_b_1()
+                        .border_color(rgb(0xe2e2e2))
+                        .bg(rgb(0xf8f8f8))
+                },
+            )
             .child(
                 div()
                     .w_full()
@@ -572,9 +615,10 @@ impl Render for UrlInput {
                             .border_color(rgb(if focused { 0x8e8e8e } else { 0xcfcfcf }))
                             .child(field),
                     )
-                    .when(!matches!(self.purpose, Purpose::Field(_)), |s| {
-                        s.child(cancel).child(button)
-                    }),
+                    .when(
+                        !matches!(self.purpose, Purpose::Field(_) | Purpose::Capture),
+                        |s| s.child(cancel).child(button),
+                    ),
             )
             .when_some(self.error, |this, message| {
                 this.child(

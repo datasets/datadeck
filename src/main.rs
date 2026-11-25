@@ -1,3 +1,4 @@
+mod capture;
 mod cli;
 mod data;
 mod grid;
@@ -5,6 +6,7 @@ mod library;
 mod library_navigation;
 mod library_view;
 mod navigation;
+mod notes_editor;
 mod overview;
 mod query;
 mod source;
@@ -365,13 +367,21 @@ impl Deck {
             return;
         };
 
-        if let Some(url) = web_links::web_url(&text) {
-            self.bookmark(url.into(), cx);
-            self.library.read(cx).focus(window);
-            return;
+        if !capture::clipboard_table(&text) {
+            if let Some(item) = web_links::capture_text(&text) {
+                self.capture_bookmark(item, cx);
+                return;
+            }
+            if self.library_open
+                && self
+                    .library
+                    .update(cx, |v, cx| v.append_note(&text, window, cx))
+            {
+                return;
+            }
         }
         self.link_probe = None;
-        self.library_open = false;
+        self.leave_library(cx);
         self.discovery = None;
         self.watcher = None;
         self.workspace = None;
@@ -396,7 +406,7 @@ impl Deck {
     fn query(&mut self, _: &ShowQuery, w: &mut Window, cx: &mut Context<Self>) {
         self.link_probe = None;
         if self.ready {
-            self.library_open = false;
+            self.leave_library(cx);
             self.url_open = false;
             self.query_open = true;
             self.editor.read(cx).focus(w, cx);
@@ -405,7 +415,7 @@ impl Deck {
     }
     fn load(&mut self, source: String, sheet: Option<String>, cx: &mut Context<Self>) {
         self.link_probe = None;
-        self.library_open = false;
+        self.leave_library(cx);
         self.discovery = None;
         let path = Path::new(&source);
         if !source.starts_with("http://")
@@ -731,7 +741,11 @@ impl Render for Deck {
             button(
                 "library-toggle",
                 if self.library_open {
-                    "Back to viewer"
+                    if opened {
+                        "Back to viewer"
+                    } else {
+                        "Dataset viewer"
+                    }
                 } else {
                     "Library"
                 },
@@ -739,6 +753,12 @@ impl Render for Deck {
             )
             .on_click(cx.listener(|s, _, window, cx| s.toggle_library(&ShowLibrary, window, cx))),
         );
+        if self.library_open && !opened {
+            toolbar = toolbar.child(
+                button("library-open-file", "Open file", false)
+                    .on_click(cx.listener(|s, _, w, cx| s.choose(&OpenFile, w, cx))),
+            );
+        }
         if opened && !self.library_open {
             toolbar = toolbar
                 .child(
@@ -1057,7 +1077,7 @@ fn main() {
         .is_some_and(|s| matches!(s.as_str(), "-h" | "--help"))
     {
         println!(
-            "DataDeck\n\nOpen the desktop viewer:\n  datadeck [FILE | FOLDER | DATAPACKAGE | URL]\n  datadeck --library     Open your bookmark library\n\nRun a saved SQL recipe and write CSV to stdout:\n  datadeck run RECIPE.sql FILE_OR_URL [--sheet NAME] [--delimiter comma|tab|semicolon|pipe] [--header yes|no]\n\nExamples:\n  datadeck examples\n  datadeck examples/field-survey.csv\n  datadeck run examples/clean-field-survey.sql examples/field-survey.csv > cleaned.csv"
+            "DataDeck\n\nOpen the desktop app:\n  datadeck               Open your recent capture log\n  datadeck FILE | FOLDER | DATAPACKAGE | URL\n  datadeck --library     Open your bookmark library\n\nRun a saved SQL recipe and write CSV to stdout:\n  datadeck run RECIPE.sql FILE_OR_URL [--sheet NAME] [--delimiter comma|tab|semicolon|pipe] [--header yes|no]\n\nExamples:\n  datadeck examples\n  datadeck examples/field-survey.csv\n  datadeck run examples/clean-field-survey.sql examples/field-survey.csv > cleaned.csv"
         );
         return;
     }
@@ -1082,6 +1102,7 @@ fn main() {
             ])
             .expect("load bundled fonts");
         source::bind_keys(cx);
+        notes_editor::bind_keys(cx);
         library_view::bind_keys(cx);
         cx.bind_keys([
             KeyBinding::new("secondary-=", LargerType, None),
@@ -1161,7 +1182,7 @@ fn main() {
                             deck.toggle_library(&ShowLibrary, w, cx)
                         }
                         Some(path) => deck.open_location(path, cx),
-                        None => (),
+                        None => deck.toggle_library(&ShowLibrary, w, cx),
                     }
                     cx.spawn(async move |this, cx| {
                         while let Ok(path) = rx.recv().await {

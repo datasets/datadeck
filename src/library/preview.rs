@@ -1,4 +1,4 @@
-use super::{dataset_url, file_url, http_url, message};
+use super::{FoundLink, Kind, dataset_url, file_url, http_url, message};
 use encoding_rs::{Encoding, UTF_8, WINDOWS_1252};
 use image::{ImageFormat, ImageReader, Limits};
 use scraper::{Html, Selector};
@@ -13,8 +13,10 @@ const IMAGE_BYTES: u64 = 4 * 1024 * 1024;
 #[derive(Default)]
 pub(super) struct Metadata {
     pub title: String,
+    pub kind: Kind,
     pub files: Vec<String>,
-    pub image: Option<Vec<u8>>,
+    pub images: Vec<FoundLink>,
+    pub visualizations: Vec<FoundLink>,
 }
 
 fn decode_html(bytes: &[u8], http_charset: Option<&str>) -> String {
@@ -40,7 +42,7 @@ fn decode_html(bytes: &[u8], http_charset: Option<&str>) -> String {
     encoding.decode(bytes).0.into_owned()
 }
 
-fn linked(base: &Url, value: &str) -> Option<Url> {
+pub(super) fn linked(base: &Url, value: &str) -> Option<Url> {
     let value = value.trim();
     if value.is_empty() || value.starts_with('#') {
         return None;
@@ -110,7 +112,11 @@ fn parse(html: &str, page: &Url) -> (Metadata, Option<Url>) {
         let downloadable = dataset_url(&url)
             || matches!(
                 mime.as_str(),
-                "text/csv" | "text/tab-separated-values" | "application/vnd.apache.parquet"
+                "text/csv"
+                    | "text/tab-separated-values"
+                    | "application/vnd.apache.parquet"
+                    | "application/vnd.ms-excel"
+                    | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             || element
                 .attr("download")
@@ -130,11 +136,15 @@ fn parse(html: &str, page: &Url) -> (Metadata, Option<Url>) {
             .select(&select("article img[src], main img[src]"))
             .find_map(|e| linked(&base, e.attr("src")?));
     }
+    let (images, visualizations) = super::discovery::assets(&document, &base);
+    let kind = super::discovery::page_kind(&document, page, &base, &mut files);
     (
         Metadata {
             title,
+            kind,
             files,
-            image: None,
+            images,
+            visualizations,
         },
         photo,
     )
@@ -164,7 +174,7 @@ fn thumbnail(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(png.into_inner())
 }
 
-fn fetch_image(agent: &ureq::Agent, url: &Url) -> Option<Vec<u8>> {
+pub(super) fn fetch_image(agent: &ureq::Agent, url: &Url) -> Option<Vec<u8>> {
     let mut response = agent
         .get(url.as_str())
         .config()
@@ -189,12 +199,16 @@ fn fetch_image(agent: &ureq::Agent, url: &Url) -> Option<Vec<u8>> {
     thumbnail(&bytes)
 }
 
-pub(super) fn fetch(url: &Url) -> Result<Metadata, String> {
+pub(super) fn fetch(url: &Url) -> Result<(Metadata, Option<Url>), String> {
     if dataset_url(url) {
-        return Ok(Metadata {
-            files: vec![file_url(url.clone())],
-            ..Default::default()
-        });
+        return Ok((
+            Metadata {
+                kind: Kind::Dataset,
+                files: vec![file_url(url.clone())],
+                ..Default::default()
+            },
+            None,
+        ));
     }
     let agent = super::net::agent(url);
     let mut response = agent
@@ -221,13 +235,17 @@ pub(super) fn fetch(url: &Url) -> Result<Metadata, String> {
                 | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     {
-        return Ok(Metadata {
-            files: vec![file_url(page)],
-            ..Default::default()
-        });
+        return Ok((
+            Metadata {
+                kind: Kind::Dataset,
+                files: vec![file_url(page)],
+                ..Default::default()
+            },
+            None,
+        ));
     }
     if !matches!(mime.as_str(), "text/html" | "application/xhtml+xml" | "") {
-        return Ok(Metadata::default());
+        return Ok((Metadata::default(), None));
     }
     let charset = response.body().charset().map(str::to_owned);
     let mut head = Vec::new();
@@ -237,9 +255,5 @@ pub(super) fn fetch(url: &Url) -> Result<Metadata, String> {
         .take(PAGE_BYTES)
         .read_to_end(&mut head)
         .map_err(message)?;
-    let (mut metadata, photo) = parse(&decode_html(&head, charset.as_deref()), &page);
-    if let Some(photo) = photo {
-        metadata.image = fetch_image(&agent, &photo);
-    }
-    Ok(metadata)
+    Ok(parse(&decode_html(&head, charset.as_deref()), &page))
 }

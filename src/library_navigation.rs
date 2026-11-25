@@ -8,7 +8,11 @@ impl Deck {
         cx: &mut Context<Self>,
     ) {
         self.link_probe = None;
-        self.library_open = !self.library_open;
+        if self.library_open {
+            self.leave_library(cx);
+        } else {
+            self.library_open = true;
+        }
         if self.library_open {
             self.url_open = false;
             self.library.update(cx, |v, cx| v.refresh(cx));
@@ -25,13 +29,31 @@ impl Deck {
         cx.notify();
     }
 
+    pub(super) fn leave_library(&mut self, cx: &mut Context<Self>) {
+        if self.library_open {
+            self.library.update(cx, |view, cx| view.flush_notes(cx));
+            self.library_open = false;
+        }
+    }
+
     pub(super) fn bookmark(&mut self, url: String, cx: &mut Context<Self>) {
+        self.capture_bookmark(
+            web_links::Capture {
+                url,
+                note: String::new(),
+            },
+            cx,
+        );
+    }
+
+    pub(super) fn capture_bookmark(&mut self, item: web_links::Capture, cx: &mut Context<Self>) {
         self.link_probe = None;
         self.library_open = true;
         self.focus_library = true;
         self.url_open = false;
         self.error = None;
-        self.library.update(cx, |v, cx| v.add_url(url, cx));
+        self.library
+            .update(cx, |v, cx| v.capture(item.url, item.note, cx));
         cx.notify();
     }
 

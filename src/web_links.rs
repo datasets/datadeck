@@ -1,3 +1,4 @@
+pub use crate::capture::{Capture, capture_text};
 use std::path::Path;
 use std::time::Duration;
 use url::Url;

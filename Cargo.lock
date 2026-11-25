@@ -1420,6 +1420,7 @@ dependencies = [
  "parquet",
  "plist",
  "raw-window-handle",
+ "regex",
  "rusqlite",
  "scraper",
  "serde",
