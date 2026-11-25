@@ -36,6 +36,22 @@
                 <string>xlsx</string>
             </array>
         </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Internet location</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.apple.web-internet-location</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>webloc</string>
+            </array>
+        </dict>
     </array>
 </dict>
 </plist>
