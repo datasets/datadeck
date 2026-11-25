@@ -1,5 +1,5 @@
 # Agent instructions
 
-Keep project tasks in Beads. Run `bd prime` for the current workflow and repository guidance.
+Keep project tasks in Beads. Run `bd prime` for the current workflow and repository guidance. See [Beads sync](docs/beads-sync.md) for setup and recovery.
 
-This repository is local until its GitHub remote at `github.com/datasets/datadeck` is created. Once a remote exists, sync both Git and Beads Dolt data when pushing.
+At session start, run `git pull`, `bd dolt pull`, and `bd status`. At session end, commit and push Git changes. The pre-push hook also pushes Beads Dolt data; run `bd dolt push` manually if it reports a sync failure.
