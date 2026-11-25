@@ -1,6 +1,9 @@
 mod cli;
 mod data;
 mod grid;
+mod library;
+mod library_navigation;
+mod library_view;
 mod navigation;
 mod overview;
 mod query;
@@ -8,6 +11,7 @@ mod source;
 mod theme;
 mod views;
 mod watch;
+mod web_links;
 mod workspace;
 use theme::Theme;
 
@@ -36,7 +40,8 @@ actions!(
         MonochromeTheme,
         Quit,
         CloseWindow,
-        Quickstart
+        Quickstart,
+        ShowLibrary
     ]
 );
 const PAPER: u32 = 0xffffff;
@@ -152,6 +157,10 @@ struct Deck {
     result: Entity<Grid>,
     overview: Entity<overview::Overview>,
     overview_open: bool,
+    library_open: bool,
+    focus_library: bool,
+    library: Entity<library_view::LibraryView>,
+    link_probe: Option<Task<()>>,
     last_inspector_open: bool,
     url: Entity<UrlInput>,
     editor: Entity<UrlInput>,
@@ -192,7 +201,7 @@ impl Deck {
             this.url_open = false;
             this.focus.focus(window);
             if let UrlEvent::Open(value) = event {
-                this.load(value.clone(), None, cx);
+                this.open_location(value.clone(), cx);
             }
             cx.notify();
         })
@@ -244,7 +253,28 @@ impl Deck {
             })
             .detach();
         }
+        let library = cx.new(library_view::LibraryView::new);
+        cx.subscribe(&library, |s, _, event, cx| {
+            let library_view::LibraryEvent::OpenData(source) = event;
+            s.load(source.clone(), None, cx);
+        })
+        .detach();
+        #[cfg(target_os = "macos")]
+        if let Some(drops) = web_links::browser_drops(window) {
+            cx.spawn(async move |this, cx| {
+                while let Ok(link) = drops.recv().await {
+                    if this.update(cx, |s, cx| s.bookmark(link, cx)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         Self {
+            library,
+            library_open: false,
+            focus_library: false,
+            link_probe: None,
             theme,
             font_size,
             focus,
@@ -316,7 +346,7 @@ impl Deck {
         cx.spawn(async move |this, cx| {
             let result = path.await;
             this.update(cx, |this, cx| match result {
-                Ok(Some(path)) => this.load(path, None, cx),
+                Ok(Some(path)) => this.open_location(path, cx),
                 Err(e) => {
                     this.error = Some(e);
                     cx.notify()
@@ -335,6 +365,13 @@ impl Deck {
             return;
         };
 
+        if let Some(url) = web_links::web_url(&text) {
+            self.bookmark(url.into(), cx);
+            self.library.read(cx).focus(window);
+            return;
+        }
+        self.link_probe = None;
+        self.library_open = false;
         self.discovery = None;
         self.watcher = None;
         self.workspace = None;
@@ -345,6 +382,7 @@ impl Deck {
         self.read_source(CLIPBOARD.into(), None, false, cx);
     }
     fn url(&mut self, _: &OpenUrl, w: &mut Window, cx: &mut Context<Self>) {
+        self.library_open = false;
         self.query_open = false;
         self.url_open = true;
         self.resources_open = false;
@@ -353,6 +391,7 @@ impl Deck {
     }
     fn query(&mut self, _: &ShowQuery, w: &mut Window, cx: &mut Context<Self>) {
         if self.ready {
+            self.library_open = false;
             self.url_open = false;
             self.query_open = true;
             self.editor.read(cx).focus(w, cx);
@@ -360,6 +399,8 @@ impl Deck {
         }
     }
     fn load(&mut self, source: String, sheet: Option<String>, cx: &mut Context<Self>) {
+        self.link_probe = None;
+        self.library_open = false;
         self.discovery = None;
         let path = Path::new(&source);
         if !source.starts_with("http://")
@@ -634,7 +675,10 @@ impl Deck {
 }
 impl Render for Deck {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.focus_grid && !self.columns.is_empty() {
+        if std::mem::take(&mut self.focus_library) && self.library_open {
+            self.library.read(cx).focus(window);
+        }
+        if !self.library_open && self.focus_grid && !self.columns.is_empty() {
             self.focus_grid = false;
             if !self.url_open && !self.query_open {
                 self.grid.focus_handle(cx).focus(window);
@@ -669,14 +713,26 @@ impl Render for Deck {
                             .font_family(MONO)
                             .text_size(px(14.))
                             .font_weight(FontWeight::MEDIUM)
-                            .child(if opened {
+                            .child(if opened && !self.library_open {
                                 caption(&self.source)
                             } else {
                                 "DataDeck".into()
                             }),
                     ),
             );
-        if opened {
+        toolbar = toolbar.child(
+            button(
+                "library-toggle",
+                if self.library_open {
+                    "Back to viewer"
+                } else {
+                    "Library"
+                },
+                false,
+            )
+            .on_click(cx.listener(|s, _, window, cx| s.toggle_library(&ShowLibrary, window, cx))),
+        );
+        if opened && !self.library_open {
             toolbar = toolbar
                 .child(
                     button("file", "Open file", false)
@@ -695,7 +751,7 @@ impl Render for Deck {
                         .on_click(cx.listener(|s, _, w, c| s.paste_data(&PasteData, w, c))),
                 );
         }
-        if self.ready {
+        if self.ready && !self.library_open {
             toolbar = toolbar.child(
                 button("query", "Query", true)
                     .on_click(cx.listener(|s, _, w, c| s.query(&ShowQuery, w, c))),
@@ -711,6 +767,7 @@ impl Render for Deck {
             .key_context("DataDeck")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::paste_data))
+            .on_action(cx.listener(Self::toggle_library))
             .on_action(cx.listener(Self::choose))
             .on_action(cx.listener(Self::choose_folder))
             .on_action(cx.listener(Self::url))
@@ -727,7 +784,7 @@ impl Render for Deck {
             .on_action(|_: &CloseWindow, w, _| w.remove_window())
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 if let Some(path) = paths.paths().first() {
-                    this.load(path.to_string_lossy().into_owned(), None, cx);
+                    this.open_location(path.to_string_lossy().into_owned(), cx);
                 }
             }))
             .child(toolbar);
@@ -753,6 +810,18 @@ impl Render for Deck {
                         },
                     ))),
             );
+        }
+        if self.link_probe.is_some() {
+            root = root.child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .text_size(px(12.))
+                    .child("Opening link…"),
+            );
+        }
+        if self.library_open {
+            return root.child(self.library.clone());
         }
         if !opened {
             return root.child(
@@ -981,7 +1050,7 @@ fn main() {
         .is_some_and(|s| matches!(s.as_str(), "-h" | "--help"))
     {
         println!(
-            "DataDeck\n\nOpen the desktop viewer:\n  datadeck [FILE | FOLDER | DATAPACKAGE | URL]\n\nRun a saved SQL recipe and write CSV to stdout:\n  datadeck run RECIPE.sql FILE_OR_URL [--sheet NAME] [--delimiter comma|tab|semicolon|pipe] [--header yes|no]\n\nExamples:\n  datadeck examples\n  datadeck examples/field-survey.csv\n  datadeck run examples/clean-field-survey.sql examples/field-survey.csv > cleaned.csv"
+            "DataDeck\n\nOpen the desktop viewer:\n  datadeck [FILE | FOLDER | DATAPACKAGE | URL]\n  datadeck --library     Open your bookmark library\n\nRun a saved SQL recipe and write CSV to stdout:\n  datadeck run RECIPE.sql FILE_OR_URL [--sheet NAME] [--delimiter comma|tab|semicolon|pipe] [--header yes|no]\n\nExamples:\n  datadeck examples\n  datadeck examples/field-survey.csv\n  datadeck run examples/clean-field-survey.sql examples/field-survey.csv > cleaned.csv"
         );
         return;
     }
@@ -1006,12 +1075,14 @@ fn main() {
             ])
             .expect("load bundled fonts");
         source::bind_keys(cx);
+        library_view::bind_keys(cx);
         cx.bind_keys([
             KeyBinding::new("secondary-=", LargerType, None),
             KeyBinding::new("secondary-+", LargerType, None),
             KeyBinding::new("secondary--", SmallerType, None),
             KeyBinding::new("secondary-0", DefaultType, None),
             KeyBinding::new("secondary-shift-o", OpenFolder, None),
+            KeyBinding::new("secondary-shift-b", ShowLibrary, None),
             KeyBinding::new("secondary-o", OpenFile, None),
             KeyBinding::new("secondary-l", OpenUrl, None),
             KeyBinding::new("secondary-v", PasteData, Some("DataDeck && !DatasetInput")),
@@ -1042,6 +1113,8 @@ fn main() {
             Menu {
                 name: "View".into(),
                 items: vec![
+                    MenuItem::action("Bookmark Library", ShowLibrary),
+                    MenuItem::separator(),
                     MenuItem::action("Increase Table Text Size", LargerType),
                     MenuItem::action("Decrease Table Text Size", SmallerType),
                     MenuItem::action("Reset Table Text Size", DefaultType),
@@ -1076,12 +1149,16 @@ fn main() {
             move |w, cx| {
                 cx.new(|cx| {
                     let mut deck = Deck::new(w, cx);
-                    if let Some(path) = initial {
-                        deck.load(path, None, cx)
+                    match initial {
+                        Some(flag) if flag == "--library" => {
+                            deck.toggle_library(&ShowLibrary, w, cx)
+                        }
+                        Some(path) => deck.open_location(path, cx),
+                        None => (),
                     }
                     cx.spawn(async move |this, cx| {
                         while let Ok(path) = rx.recv().await {
-                            if this.update(cx, |s, cx| s.load(path, None, cx)).is_err() {
+                            if this.update(cx, |s, cx| s.open_location(path, cx)).is_err() {
                                 break;
                             }
                         }

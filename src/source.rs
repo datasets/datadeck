@@ -107,6 +107,7 @@ pub enum UrlEvent {
 enum Purpose {
     Url,
     Query,
+    Field(&'static str),
 }
 
 pub struct UrlInput {
@@ -170,6 +171,18 @@ impl UrlInput {
             purpose: Purpose::Query,
             ..Self::new(cx)
         }
+    }
+
+    pub fn field(hint: &'static str, cx: &mut Context<Self>) -> Self {
+        Self {
+            purpose: Purpose::Field(hint),
+            focus: cx.focus_handle().tab_stop(true),
+            ..Self::new(cx)
+        }
+    }
+
+    pub fn value(&self) -> &str {
+        &self.text
     }
 
     pub fn set_text(&mut self, value: String, cx: &mut Context<Self>) {
@@ -267,7 +280,7 @@ impl UrlInput {
                     cx.notify();
                 }
             }
-        } else if !value.is_empty() {
+        } else if !value.is_empty() || matches!(self.purpose, Purpose::Field(_)) {
             cx.emit(UrlEvent::Open(value.to_owned()));
         }
     }
@@ -378,6 +391,7 @@ impl Render for UrlInput {
         let (hint, verb) = match self.purpose {
             Purpose::Url => ("https://example.org/data.parquet", "Open"),
             Purpose::Query => ("Ask about the data or write SQL…", "Run"),
+            Purpose::Field(hint) => (hint, ""),
         };
         let canvas = canvas(
             |_, _, _| (),
@@ -493,10 +507,10 @@ impl Render for UrlInput {
             .on_click(cx.listener(|_, _, _, cx| cx.emit(UrlEvent::Cancel)));
 
         div()
-            .id(if self.purpose == Purpose::Url {
-                "url-editor"
-            } else {
-                "query-editor"
+            .id(match self.purpose {
+                Purpose::Url => "url-editor",
+                Purpose::Query => "query-editor",
+                Purpose::Field(hint) => hint,
             })
             .key_context("DatasetInput")
             .track_focus(&self.focus)
@@ -529,11 +543,13 @@ impl Render for UrlInput {
             .w_full()
             .flex()
             .flex_col()
-            .px_4()
-            .py(px(4.))
-            .border_b_1()
-            .border_color(rgb(0xe2e2e2))
-            .bg(rgb(0xf8f8f8))
+            .when(!matches!(self.purpose, Purpose::Field(_)), |s| {
+                s.px_4()
+                    .py(px(4.))
+                    .border_b_1()
+                    .border_color(rgb(0xe2e2e2))
+                    .bg(rgb(0xf8f8f8))
+            })
             .child(
                 div()
                     .w_full()
@@ -556,8 +572,9 @@ impl Render for UrlInput {
                             .border_color(rgb(if focused { 0x8e8e8e } else { 0xcfcfcf }))
                             .child(field),
                     )
-                    .child(cancel)
-                    .child(button),
+                    .when(!matches!(self.purpose, Purpose::Field(_)), |s| {
+                        s.child(cancel).child(button)
+                    }),
             )
             .when_some(self.error, |this, message| {
                 this.child(
