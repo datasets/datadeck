@@ -4,16 +4,10 @@ use crate::{INK, LINE, MONO, MUTED, PAPER, button};
 use gpui::{prelude::*, *};
 use std::{collections::HashMap, sync::Arc};
 
-actions!(datadeck_library, [FocusLink, NextField, PreviousField]);
+actions!(datadeck_library, [NextField, PreviousField]);
 
 pub fn bind_keys(cx: &mut App) {
-    let key = if cfg!(target_os = "macos") {
-        "cmd-l"
-    } else {
-        "ctrl-l"
-    };
     cx.bind_keys([
-        KeyBinding::new(key, FocusLink, Some("Library")),
         KeyBinding::new("tab", NextField, Some("Library")),
         KeyBinding::new("shift-tab", PreviousField, Some("Library")),
     ]);
@@ -69,7 +63,7 @@ struct Form {
 }
 
 enum PreviewState {
-    Fetching,
+    Fetching(u64),
     Unavailable,
 }
 
@@ -80,6 +74,7 @@ pub struct LibraryView {
     focus: FocusHandle,
     generation: u64,
     read_generation: u64,
+    preview_generation: u64,
     preview_states: HashMap<i64, PreviewState>,
     message: Option<String>,
     ready: bool,
@@ -98,6 +93,7 @@ impl LibraryView {
             focus: cx.focus_handle().tab_stop(true),
             generation: 0,
             read_generation: 0,
+            preview_generation: 0,
             preview_states: HashMap::new(),
             message: None,
             ready: false,
@@ -211,7 +207,7 @@ impl LibraryView {
         cx.notify();
     }
 
-    fn focus_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn focus_url(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.form.is_none() {
             self.start_form(None, cx);
         }
@@ -229,9 +225,21 @@ impl LibraryView {
     }
 
     pub fn add_url(&mut self, url: String, cx: &mut Context<Self>) {
+        if !self.ready {
+            self.refresh(cx);
+        }
+        let kind = if crate::web_links::web_url(&url)
+            .as_ref()
+            .is_some_and(crate::web_links::looks_like_table)
+        {
+            Kind::Dataset
+        } else {
+            Kind::Other
+        };
         self.write(
             BookmarkDraft {
                 url,
+                kind,
                 ..Default::default()
             },
             None,
@@ -276,32 +284,70 @@ impl LibraryView {
         let job = cx.background_executor().spawn(async move {
             let db = Library::local()?;
             if let Some(previous) = original {
-                db.update(&previous, draft)
-            } else {
-                db.save(draft)
+                return db.update(&previous, draft).map(|item| (item, true));
+            }
+            let dropped_url = form_id
+                .is_none()
+                .then(|| crate::web_links::web_url(&draft.url))
+                .flatten();
+            match db.save(draft) {
+                Ok(item) => Ok((item, true)),
+                Err(error) => {
+                    if let Some(url) = dropped_url
+                        && let Some(saved) = db.list()?.into_iter().find(|b| b.url == url.as_str())
+                    {
+                        return Ok((saved, false));
+                    }
+                    Err(error)
+                }
             }
         });
         cx.spawn(async move |this, cx| {
             let result = job.await;
             this.update(cx, |this, cx| {
                 let current = this.form.as_ref().map(|f| f.generation);
-                let show = form_id.is_none() || form_id == current;
+                let editing = this.form.as_ref().is_some_and(|f| {
+                    f.original.is_some()
+                        || !f.url.read(cx).value().is_empty()
+                        || !f.title.read(cx).value().is_empty()
+                        || !f.notes.read(cx).value().is_empty()
+                        || f.kind != Kind::Other
+                        || !f.files.is_empty()
+                });
+                let show = if form_id.is_some() {
+                    form_id == current
+                } else {
+                    !editing
+                };
                 match result {
-                    Ok(item) => {
+                    Ok((item, written)) => {
                         let id = item.id;
                         this.upsert(item);
                         if show {
                             this.form = None;
                             this.filter = None;
                             this.selected = Some(id);
-                            this.message = Some("Saved locally".into());
                         }
-                        this.refresh(cx);
-                        if fetch {
+                        if show || form_id.is_none() {
+                            this.message = Some(
+                                if written {
+                                    "Saved locally"
+                                } else {
+                                    "Already in your library"
+                                }
+                                .into(),
+                            );
+                        }
+                        if this.ready {
+                            this.read_generation += 1;
+                        } else {
+                            this.refresh(cx);
+                        }
+                        if fetch && written {
                             this.enrich(id, cx);
                         }
                     }
-                    Err(error) if show => {
+                    Err(error) if show || form_id.is_none() => {
                         this.message = Some(error);
                         if form_id == current
                             && let Some(form) = &mut this.form
@@ -330,18 +376,28 @@ impl LibraryView {
     }
 
     fn enrich(&mut self, id: i64, cx: &mut Context<Self>) {
-        self.preview_states.insert(id, PreviewState::Fetching);
+        self.preview_generation += 1;
+        let generation = self.preview_generation;
+        self.preview_states
+            .insert(id, PreviewState::Fetching(generation));
         let job = cx
             .background_executor()
             .spawn(async move { Library::local()?.enrich(id) });
         cx.spawn(async move |this, cx| {
             let result = job.await;
             this.update(cx, |this, cx| {
+                if !matches!(this.preview_states.get(&id), Some(PreviewState::Fetching(n)) if *n == generation) {
+                    return;
+                }
                 match result {
                     Ok(item) => {
                         this.preview_states.remove(&id);
                         this.upsert(item);
-                        this.refresh(cx);
+                        if this.ready {
+                            this.read_generation += 1;
+                        } else {
+                            this.refresh(cx);
+                        }
                     }
                     Err(_) => {
                         this.preview_states.insert(id, PreviewState::Unavailable);
@@ -530,6 +586,7 @@ impl LibraryView {
                                     let active = this.selected == Some(id) && this.form.is_none();
                                     div()
                                         .id(("bookmark", id as usize))
+                                        .w_full()
                                         .h(px(64.))
                                         .px_4()
                                         .py_2()
@@ -575,6 +632,7 @@ impl LibraryView {
                         }),
                     )
                     .flex_1()
+                    .w_full()
                     .min_h_0(),
                 )
             })
@@ -721,6 +779,7 @@ impl LibraryView {
     fn detail(&self, entry: &Entry, cx: &mut Context<Self>) -> Div {
         let item = &entry.item;
         let url = item.url.clone();
+        let preview_url = url.clone();
         let id = item.id;
         div()
             .max_w(px(660.))
@@ -772,6 +831,9 @@ impl LibraryView {
             .when_some(entry.preview.clone(), |s, preview| {
                 s.child(
                     div()
+                        .id("bookmark-preview")
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| cx.open_url(&preview_url))
                         .w_full()
                         .h(px(165.))
                         .flex()
@@ -888,7 +950,7 @@ impl LibraryView {
                     }),
             )
             .when_some(self.preview_states.get(&id), |s, state| match state {
-                PreviewState::Fetching => s.child(
+                PreviewState::Fetching(_) => s.child(
                     div()
                         .font_family(MONO)
                         .text_size(px(10.))
@@ -941,7 +1003,6 @@ impl Render for LibraryView {
             .bg(rgb(PAPER))
             .key_context("Library")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &FocusLink, window, cx| this.focus_url(window, cx)))
             .on_action(cx.listener(|_, _: &NextField, w, _| w.focus_next()))
             .on_action(cx.listener(|_, _: &PreviousField, w, _| w.focus_prev()))
             .child(self.sidebar(compact, cx))

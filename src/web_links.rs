@@ -142,6 +142,36 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_web_links_distinguish_html_pages_from_data_downloads() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        for (content_type, body, expected) in [
+            ("text/html; charset=UTF-8", "<p>A data story</p>", true),
+            (
+                "application/octet-stream",
+                "<!DOCTYPE html><title>Chart</title>",
+                true,
+            ),
+            ("text/csv", "station,n\nFen,8", false),
+        ] {
+            let server = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url =
+                Url::parse(&format!("http://{}/resource", server.local_addr().unwrap())).unwrap();
+            let thread = std::thread::spawn(move || {
+                let (mut socket, _) = server.accept().unwrap();
+                for header in BufReader::new(&socket).lines() {
+                    if header.unwrap().is_empty() {
+                        break;
+                    }
+                }
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            });
+            assert_eq!(is_page(&url), expected);
+            thread.join().unwrap();
+        }
+    }
+
+    #[test]
     fn finder_internet_shortcuts_support_xml_and_binary_plists() {
         let mut dict = plist::Dictionary::new();
         dict.insert("URL".into(), "https://example.org/chart".into());

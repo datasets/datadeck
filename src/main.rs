@@ -382,7 +382,11 @@ impl Deck {
         self.read_source(CLIPBOARD.into(), None, false, cx);
     }
     fn url(&mut self, _: &OpenUrl, w: &mut Window, cx: &mut Context<Self>) {
-        self.library_open = false;
+        self.link_probe = None;
+        if self.library_open {
+            self.library.update(cx, |view, cx| view.focus_url(w, cx));
+            return;
+        }
         self.query_open = false;
         self.url_open = true;
         self.resources_open = false;
@@ -390,6 +394,7 @@ impl Deck {
         cx.notify()
     }
     fn query(&mut self, _: &ShowQuery, w: &mut Window, cx: &mut Context<Self>) {
+        self.link_probe = None;
         if self.ready {
             self.library_open = false;
             self.url_open = false;
@@ -713,7 +718,9 @@ impl Render for Deck {
                             .font_family(MONO)
                             .text_size(px(14.))
                             .font_weight(FontWeight::MEDIUM)
-                            .child(if opened && !self.library_open {
+                            .child(if self.library_open {
+                                "DataDeck / Library".into()
+                            } else if opened {
                                 caption(&self.source)
                             } else {
                                 "DataDeck".into()
