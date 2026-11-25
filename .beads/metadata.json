@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "datadeck",
+  "project_id": "bb28665d-11ee-4b74-bc2b-ef179d3e843e"
+}
