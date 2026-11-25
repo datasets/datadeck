@@ -31,7 +31,7 @@ impl Deck {
 
     pub(super) fn leave_library(&mut self, cx: &mut Context<Self>) {
         if self.library_open {
-            self.library.update(cx, |view, cx| view.flush_notes(cx));
+            self.library.update(cx, |view, cx| view.leave(cx));
             self.library_open = false;
         }
     }

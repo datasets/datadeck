@@ -61,6 +61,11 @@ impl LibraryView {
             )
     }
 
+    fn inbox_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        option("open-inbox-folder".into(), "Open inbox folder ↗", false)
+            .on_click(cx.listener(|this, _, _, cx| this.open_inbox(cx)))
+    }
+
     fn sidebar(&self, compact: bool, cx: &mut Context<Self>) -> Div {
         let visible: Vec<_> = self
             .entries
@@ -189,6 +194,14 @@ impl LibraryView {
                     },
                 ))
             })
+            .child(
+                div()
+                    .mt_auto()
+                    .p_3()
+                    .border_t_1()
+                    .border_color(rgb(LINE))
+                    .child(self.inbox_button(cx)),
+            )
     }
 
     fn form_panel(&self, form: &Form, cx: &mut Context<Self>) -> Div {
@@ -205,6 +218,12 @@ impl LibraryView {
                     .text_size(px(25.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Bookmark details"),
+            )
+            .child(
+                div().flex().items_center().gap_2().child(
+                    option("open-markdown".into(), "Open Markdown file ↗", false)
+                        .on_click(cx.listener(move |this, _, _, cx| this.open_markdown(id, cx))),
+                ),
             )
             .child(field_row("Web address", form.url.clone()))
             .child(field_row("Title", form.title.clone()))
@@ -581,6 +600,7 @@ impl LibraryView {
 
 impl Render for LibraryView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.observe_files(cx);
         let compact = window.viewport_size().width < px(850.);
         if std::mem::take(&mut self.focus_note)
             && let Some(note) = self.selected.and_then(|id| self.notes.get(&id))
@@ -615,15 +635,21 @@ impl Render for LibraryView {
                             "Include a note above or below the URL, or add one as the page loads.",
                         ))
                         .child(self.capture_line(cx))
-                        .when_some(self.message.clone(), |s, message| {
-                            s.child(
-                                div()
-                                    .font_family(MONO)
-                                    .text_size(px(11.))
-                                    .text_color(rgb(MUTED))
-                                    .child(message),
-                            )
-                        }),
+                        .when(self.database.is_some(), |s| {
+                            s.child(div().flex().justify_start().child(self.inbox_button(cx)))
+                        })
+                        .when_some(
+                            self.message.clone().or_else(|| self.file_warning.clone()),
+                            |s, message| {
+                                s.child(
+                                    div()
+                                        .font_family(MONO)
+                                        .text_size(px(11.))
+                                        .text_color(rgb(MUTED))
+                                        .child(message),
+                                )
+                            },
+                        ),
                 )
         } else {
             div()
@@ -665,16 +691,22 @@ impl Render for LibraryView {
                         )
                     })
                     .child(panel)
-                    .when_some(self.message.clone().filter(|_| !empty), |s, message| {
-                        s.child(
-                            div()
-                                .pt_3()
-                                .text_color(rgb(MUTED))
-                                .font_family(MONO)
-                                .text_size(px(11.))
-                                .child(message),
-                        )
-                    }),
+                    .when_some(
+                        self.message
+                            .clone()
+                            .or_else(|| self.file_warning.clone())
+                            .filter(|_| !empty),
+                        |s, message| {
+                            s.child(
+                                div()
+                                    .pt_3()
+                                    .text_color(rgb(MUTED))
+                                    .font_family(MONO)
+                                    .text_size(px(11.))
+                                    .child(message),
+                            )
+                        },
+                    ),
             )
     }
 }

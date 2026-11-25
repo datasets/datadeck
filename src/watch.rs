@@ -10,7 +10,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(120);
 const SETTLE_TIME: Duration = Duration::from_millis(360);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FileStamp {
+pub(crate) struct FileStamp {
     length: u64,
     modified: Option<SystemTime>,
     created: Option<SystemTime>,
@@ -22,11 +22,15 @@ struct FileStamp {
 
 impl FileStamp {
     fn read(path: &Path) -> Result<Self, ErrorKind> {
+        fs::metadata(path)
+            .map(|m| Self::from_metadata(&m))
+            .map_err(|e| e.kind())
+    }
+
+    pub(crate) fn from_metadata(metadata: &fs::Metadata) -> Self {
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
-
-        let metadata = fs::metadata(path).map_err(|e| e.kind())?;
-        Ok(Self {
+        Self {
             length: metadata.len(),
             modified: metadata.modified().ok(),
             created: metadata.created().ok(),
@@ -34,7 +38,7 @@ impl FileStamp {
             identity: (metadata.dev(), metadata.ino()),
             #[cfg(unix)]
             changed: (metadata.ctime(), metadata.ctime_nsec()),
-        })
+        }
     }
 }
 

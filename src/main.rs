@@ -1065,6 +1065,16 @@ impl Render for Deck {
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.as_slice() == ["--inbox-path"] {
+        match library::inbox_path() {
+            Ok(path) => println!("{}", path.display()),
+            Err(error) => {
+                eprintln!("DataDeck: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.first().is_some_and(|s| s == "run") {
         if let Err(e) = cli::replay(&args[1..]) {
             eprintln!("DataDeck: {e}");
@@ -1077,7 +1087,7 @@ fn main() {
         .is_some_and(|s| matches!(s.as_str(), "-h" | "--help"))
     {
         println!(
-            "DataDeck\n\nOpen the desktop app:\n  datadeck               Open your recent capture log\n  datadeck FILE | FOLDER | DATAPACKAGE | URL\n  datadeck --library     Open your bookmark library\n\nRun a saved SQL recipe and write CSV to stdout:\n  datadeck run RECIPE.sql FILE_OR_URL [--sheet NAME] [--delimiter comma|tab|semicolon|pipe] [--header yes|no]\n\nExamples:\n  datadeck examples\n  datadeck examples/field-survey.csv\n  datadeck run examples/clean-field-survey.sql examples/field-survey.csv > cleaned.csv"
+            "DataDeck\n\nOpen the desktop app:\n  datadeck               Open your recent capture log\n  datadeck FILE | FOLDER | DATAPACKAGE | URL\n  datadeck --library     Open your bookmark library\n  datadeck --inbox-path  Print the Markdown inbox directory\n\nRun a saved SQL recipe and write CSV to stdout:\n  datadeck run RECIPE.sql FILE_OR_URL [--sheet NAME] [--delimiter comma|tab|semicolon|pipe] [--header yes|no]\n\nExamples:\n  datadeck examples\n  datadeck examples/field-survey.csv\n  datadeck run examples/clean-field-survey.sql examples/field-survey.csv > cleaned.csv"
         );
         return;
     }

@@ -1,22 +1,34 @@
 mod discovery;
+mod files;
+pub(crate) use files::markdown as is_inbox_entry;
+mod migration;
 mod net;
 mod preview;
 
-use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use chrono::Utc;
+use files::{Document, Header};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
+    #[serde(alias = "Dataset")]
     Dataset,
+    #[serde(alias = "Story")]
     Story,
+    #[serde(alias = "Visualization")]
     Visualization,
     #[default]
+    #[serde(alias = "Other")]
     Other,
 }
 
@@ -49,6 +61,7 @@ pub struct FoundLink {
 
 #[derive(Clone, Debug)]
 pub struct Bookmark {
+    pub path: PathBuf,
     pub id: i64,
     pub revision: i64,
     pub notes_revision: i64,
@@ -68,6 +81,7 @@ pub struct Bookmark {
 pub struct Library {
     path: PathBuf,
     recovery_session: String,
+    paths: Arc<Mutex<HashMap<i64, PathBuf>>>,
 }
 
 fn message(err: impl std::fmt::Display) -> String {
@@ -140,80 +154,28 @@ fn normalized(draft: BookmarkDraft) -> Result<BookmarkDraft, String> {
     })
 }
 
-const FIELDS: &str =
-    "id,revision,url,COALESCE(NULLIF(title,''),fetched_title,''),notes,kind,files,found,image,notes_revision,images,visualizations,
-    captured_at, COALESCE(strftime('%Y-%m-%d · %H:%M', captured_at / 1000, 'unixepoch', 'localtime'), '')";
-
-fn decode(row: &Row<'_>) -> rusqlite::Result<Bookmark> {
-    fn links<T: DeserializeOwned>(row: &Row<'_>, column: usize) -> rusqlite::Result<Vec<T>> {
-        serde_json::from_str(&row.get::<_, String>(column)?).map_err(|err| {
-            rusqlite::Error::FromSqlConversionFailure(
-                column,
-                rusqlite::types::Type::Text,
-                Box::new(err),
-            )
-        })
-    }
-    let mut files = links(row, 6)?;
-    for file in links(row, 7)? {
-        if !files.contains(&file) {
-            files.push(file);
-        }
-    }
-    let kind: String = row.get(5)?;
-    Ok(Bookmark {
-        id: row.get(0)?,
-        revision: row.get(1)?,
-        url: row.get(2)?,
-        title: row.get(3)?,
-        notes: row.get(4)?,
-        kind: Kind::ALL
-            .into_iter()
-            .find(|k| k.label() == kind)
-            .unwrap_or_default(),
-        files,
-        image: row.get(8)?,
-        notes_revision: row.get(9)?,
-        images: links(row, 10)?,
-        visualizations: links(row, 11)?,
-        captured_at: row.get(12)?,
-        capture_label: row.get(13)?,
-    })
-}
-
-fn bookmark(conn: &Connection, id: i64) -> Result<Bookmark, String> {
-    conn.query_row(
-        &format!("SELECT {FIELDS} FROM bookmarks WHERE id=?1"),
-        [id],
-        decode,
-    )
-    .optional()
-    .map_err(message)?
-    .ok_or_else(|| "This bookmark was removed.".into())
-}
-
-fn write_error(err: rusqlite::Error) -> String {
-    if err
-        .sqlite_error()
-        .is_some_and(|e| e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE)
-    {
-        "This URL is already in your library.".into()
-    } else {
-        message(err)
-    }
+pub fn inbox_path() -> Result<PathBuf, String> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| dirs::home_dir().map(|home| home.join(".config")))
+        .ok_or("Your configuration directory is unavailable.")?;
+    Ok(config.join("datadeck/inbox"))
 }
 
 impl Library {
     pub fn local() -> Result<Self, String> {
-        let directory = dirs::data_local_dir()
-            .ok_or("The local application data directory is unavailable.")?
-            .join("DataDeck");
-        std::fs::create_dir_all(&directory).map_err(message)?;
-        Self::open(directory.join("library.sqlite3"))
+        let inbox = inbox_path()?;
+        if let Some(legacy) = dirs::data_local_dir().map(|p| p.join("DataDeck/library.sqlite3")) {
+            Self::open_migrating(inbox, &legacy)
+        } else {
+            Self::open(inbox)
+        }
     }
 
     fn open(path: PathBuf) -> Result<Self, String> {
         static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
+        fs::create_dir_all(&path).map_err(message)?;
         let started = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -223,254 +185,331 @@ impl Library {
             std::process::id(),
             NEXT_SESSION.fetch_add(1, Ordering::Relaxed)
         );
-        let library = Self {
+        Ok(Self {
             path,
             recovery_session,
-        };
-        let mut conn = library.connect()?;
-        let version = |conn: &Connection| {
-            conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-                .map_err(message)
-        };
-        if version(&conn)? >= 2 {
-            return Ok(library);
+            paths: Default::default(),
+        })
+    }
+
+    pub fn inbox_path(&self) -> &Path {
+        &self.path
+    }
+
+    fn open_migrating(path: PathBuf, legacy: &Path) -> Result<Self, String> {
+        let library = Self::open(path)?;
+        let marker = library.path.join(".sqlite-imported");
+        if legacy.is_file() && !marker.exists() {
+            let _lock = library.lock(Duration::from_secs(10))?;
+            let (mut docs, _) = files::scan(&library.path)?;
+            migration::run(legacy, &marker, |row| library.import(&mut docs, row))?;
         }
-        // Another process may have migrated this file while we waited for the write lock.
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(message)?;
-        if version(&tx)? == 0 {
-            tx.execute_batch(
-                "CREATE TABLE IF NOT EXISTS bookmarks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            revision INTEGER NOT NULL DEFAULT 1,
-            url TEXT UNIQUE NOT NULL,
-            title TEXT NOT NULL,
-            notes TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            files TEXT NOT NULL,
-            fetched_title TEXT,
-            found TEXT NOT NULL DEFAULT '[]',
-            image BLOB
-        );
-        ALTER TABLE bookmarks ADD COLUMN notes_revision INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE bookmarks ADD COLUMN images TEXT NOT NULL DEFAULT '[]';
-        ALTER TABLE bookmarks ADD COLUMN visualizations TEXT NOT NULL DEFAULT '[]';
-        ALTER TABLE bookmarks ADD COLUMN captured_at INTEGER;
-        CREATE INDEX bookmarks_capture ON bookmarks(captured_at DESC, id DESC);
-        PRAGMA user_version = 1;",
-            )
-            .map_err(message)?;
-        }
-        if version(&tx)? < 2 {
-            // Historical categories may have been chosen explicitly; keep them owned by the user.
-            tx.execute_batch(
-                "ALTER TABLE bookmarks ADD COLUMN kind_manual INTEGER NOT NULL DEFAULT 1;
-                              PRAGMA user_version = 2;",
-            )
-            .map_err(message)?;
-        }
-        tx.commit().map_err(message)?;
         Ok(library)
     }
 
-    fn connect(&self) -> Result<Connection, String> {
-        let conn = Connection::open(&self.path).map_err(message)?;
-        conn.busy_timeout(Duration::from_secs(5)).map_err(message)?;
-        Ok(conn)
+    fn lock(&self, timeout: Duration) -> Result<File, String> {
+        let path = self.path.join(".datadeck.lock");
+        if fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
+            return Err("Inbox lock must be a regular file.".into());
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(message)?;
+        let start = std::time::Instant::now();
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(file),
+                Err(TryLockError::WouldBlock) if start.elapsed() < timeout => {
+                    std::thread::sleep(Duration::from_millis(3))
+                }
+                Err(TryLockError::WouldBlock) => {
+                    return Err(
+                        "Another DataDeck window is writing to the inbox. Try again.".into(),
+                    );
+                }
+                Err(TryLockError::Error(error)) => return Err(message(error)),
+            }
+        }
     }
 
-    pub fn list(&self) -> Result<Vec<Bookmark>, String> {
-        let conn = self.connect()?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {FIELDS} FROM bookmarks ORDER BY captured_at DESC, id DESC"
-            ))
-            .map_err(message)?;
-        stmt.query_map([], decode)
-            .map_err(message)?
-            .collect::<Result<_, _>>()
-            .map_err(message)
+    fn remember(&self, doc: &Document) {
+        self.paths
+            .lock()
+            .expect("inbox path cache")
+            .insert(doc.header.datadeck.id, doc.path.clone());
+    }
+
+    fn document(&self, id: i64) -> Result<Document, String> {
+        let cached = self
+            .paths
+            .lock()
+            .expect("inbox path cache")
+            .get(&id)
+            .cloned();
+        if let Some(path) = cached
+            && let Ok(Some(doc)) = Document::read(path)
+            && doc.header.datadeck.id == id
+        {
+            return Ok(doc);
+        }
+        let doc = files::scan(&self.path)?
+            .0
+            .into_iter()
+            .find(|doc| doc.header.datadeck.id == id)
+            .ok_or("This bookmark was removed or its file is unreadable.")?;
+        self.remember(&doc);
+        Ok(doc)
+    }
+
+    pub fn list_with_warnings(&self) -> Result<(Vec<Bookmark>, Vec<String>), String> {
+        let (docs, warnings) = files::scan(&self.path)?;
+        let mut bookmarks = Vec::with_capacity(docs.len());
+        for doc in docs {
+            self.remember(&doc);
+            bookmarks.push(doc.bookmark());
+        }
+        bookmarks.sort_by_key(|b| std::cmp::Reverse((b.captured_at, b.id)));
+        Ok((bookmarks, warnings))
     }
 
     #[cfg(test)]
-    pub fn save(&self, draft: BookmarkDraft) -> Result<Bookmark, String> {
+    pub fn list(&self) -> Result<Vec<Bookmark>, String> {
+        self.list_with_warnings().map(|(bookmarks, _)| bookmarks)
+    }
+
+    fn next_id(docs: &[Document]) -> i64 {
+        let mut id = Utc::now().timestamp_micros();
+        while docs.iter().any(|d| d.header.datadeck.id == id) {
+            id += 1;
+        }
+        id
+    }
+
+    fn import(&self, docs: &mut Vec<Document>, row: migration::LegacyRecord) -> Result<(), String> {
+        let url = http_url(&row.url)?.to_string();
+        if let Some(existing) = docs.iter().find(|d| d.header.url == url) {
+            if !row.notes.is_empty() && row.notes != existing.notes {
+                migration::recover_note(&self.path, &row)?;
+            }
+            return Ok(());
+        }
+        let mut header = Header::default();
+        header.url = url;
+        header.datadeck.id = if row.id != 0 && docs.iter().all(|d| d.header.datadeck.id != row.id) {
+            row.id
+        } else {
+            Self::next_id(docs)
+        };
+        header.datadeck.revision = row.revision;
+        header.datadeck.notes_revision = row.notes_revision;
+        header.title = row.title;
+        if let Some(title) = row.fetched_title {
+            header.set_page_title(title);
+        }
+        header.kind = Kind::ALL
+            .into_iter()
+            .find(|kind| kind.label().eq_ignore_ascii_case(&row.kind));
+        if !row.kind_manual {
+            header.datadeck.auto_kind = header.kind;
+        }
+        header.set_files(row.files, row.found)?;
+        header.set_time(row.captured_at);
+        header.images = row.images;
+        header.visualizations = row.visualizations;
+        if let Some(image) = row.image {
+            header.thumbnail = Some(files::asset(&self.path, header.datadeck.id, &image)?);
+        }
+        let mut doc = Document::new(&self.path, header, row.notes);
+        doc.write()?;
+        docs.push(doc);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn save(&self, draft: BookmarkDraft) -> Result<Bookmark, String> {
         self.store(draft, false).map(|(item, _)| item)
     }
 
-    /// Re-capturing a URL moves the original bookmark to the top without replacing its contents.
     pub fn capture(&self, draft: BookmarkDraft) -> Result<(Bookmark, bool), String> {
         self.store(draft, true)
     }
 
     fn store(&self, draft: BookmarkDraft, recapture: bool) -> Result<(Bookmark, bool), String> {
-        let mut draft = normalized(draft)?;
-        if recapture && draft.kind == Kind::Other {
-            draft.kind = discovery::url_kind(&http_url(&draft.url)?);
-        }
-        let mut conn = self.connect()?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(message)?;
-        // Serialize captures, including two instances saving during the same millisecond.
-        let time: i64 = tx.query_row(
-            "SELECT max(CAST(unixepoch('subsec') * 1000 AS INTEGER), COALESCE(max(captured_at), 0) + 1) FROM bookmarks",
-            [], |row| row.get(0),
-        ).map_err(message)?;
-        let inserted = tx.execute(
-            "INSERT INTO bookmarks(url,title,notes,kind,files,captured_at,kind_manual) VALUES (?1,?2,?3,?4,?5,?6,?7)
-             ON CONFLICT(url) DO NOTHING",
-            params![
-                draft.url,
-                draft.title,
-                draft.notes,
-                draft.kind.label(),
-                serde_json::to_string(&draft.files).map_err(message)?,
-                time,
-                !recapture,
-            ],
-        ).map_err(write_error)? != 0;
-        let id = if inserted {
-            tx.last_insert_rowid()
-        } else if recapture {
-            let (id, mut notes): (i64, String) = tx
-                .query_row(
-                    "SELECT id, notes FROM bookmarks WHERE url=?1",
-                    [&draft.url],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(message)?;
-            let addition = draft.notes.trim();
-            if !addition.is_empty()
-                && notes.trim_end() != addition
-                && !notes.trim_end().ends_with(&format!("\n\n{addition}"))
-            {
-                if !notes.is_empty() && !notes.ends_with("\n\n") {
-                    if !notes.ends_with('\n') {
-                        notes.push('\n');
-                    }
-                    notes.push('\n');
+        let draft = normalized(draft)?;
+        let _lock = self.lock(Duration::from_secs(5))?;
+        let (mut docs, _) = files::scan(&self.path)?;
+        let time = docs
+            .iter()
+            .filter_map(|d| d.header.time())
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1)
+            .max(Utc::now().timestamp_millis());
+        let (mut doc, inserted) =
+            if let Some(index) = docs.iter().position(|d| d.header.url == draft.url) {
+                if !recapture {
+                    return Err("This URL is already in your library.".into());
                 }
-                notes.push_str(addition);
-            }
-            tx.execute("UPDATE bookmarks SET captured_at=?1, notes_revision=notes_revision+(notes != ?2), notes=?2 WHERE id=?3",
-                params![time, notes, id]).map_err(message)?;
-            id
-        } else {
-            return Err("This URL is already in your library.".into());
-        };
-        let saved = bookmark(&tx, id)?;
-        tx.commit().map_err(message)?;
-        Ok((saved, inserted))
+                let mut doc = docs.swap_remove(index);
+                let addition = draft.notes.trim();
+                if !addition.is_empty()
+                    && doc.notes.trim_end() != addition
+                    && !doc.notes.trim_end().ends_with(&format!("\n\n{addition}"))
+                {
+                    if !doc.notes.is_empty() && !doc.notes.ends_with("\n\n") {
+                        if !doc.notes.ends_with('\n') {
+                            doc.notes.push('\n');
+                        }
+                        doc.notes.push('\n');
+                    }
+                    doc.notes.push_str(addition);
+                    doc.header.datadeck.notes_revision =
+                        doc.header.datadeck.notes_revision.saturating_add(1);
+                }
+                (doc, false)
+            } else {
+                let mut h = Header::default();
+                h.url = draft.url;
+                h.datadeck.id = Self::next_id(&docs);
+                h.datadeck.revision = 1;
+                h.title = draft.title;
+                let kind = if recapture && draft.kind == Kind::Other {
+                    discovery::url_kind(&http_url(&h.url)?)
+                } else {
+                    draft.kind
+                };
+                if recapture {
+                    h.set_auto_kind(kind);
+                } else {
+                    h.kind = Some(kind);
+                }
+                h.files = draft.files;
+                h.set_time(Some(time));
+                (Document::new(&self.path, h, draft.notes), true)
+            };
+        doc.header.set_time(Some(time));
+        doc.write()?;
+        self.remember(&doc);
+        Ok((doc.bookmark(), inserted))
     }
 
-    /// A successful return acknowledges a committed edit. Metadata has an independent revision.
     pub fn save_notes(&self, id: i64, previous: &str, notes: &str) -> Result<i64, String> {
-        let mut conn = self.connect()?;
-        // A foreground navigation flush must never inherit the general five-second lock wait.
-        conn.busy_timeout(Duration::from_millis(40))
-            .map_err(message)?;
-        let tx = conn.transaction().map_err(message)?;
-        let revision = tx
-            .query_row(
-                "UPDATE bookmarks SET notes_revision = notes_revision + (notes != ?2), notes = ?2
-             WHERE id = ?1 AND (notes = ?3 OR notes = ?2) RETURNING notes_revision",
-                params![id, notes, previous],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(message)?;
-        let Some(revision) = revision else {
-            drop(tx);
-            let message = "Notes changed in another window or the bookmark was removed.";
-            return Err(match self.recover_notes(id, notes) {
-                Ok(path) => format!("{message} Your draft was saved to {}", path.display()),
-                Err(error) => format!(
-                    "{message} Could not save a recovery copy ({error}). Copy your draft before reloading."
-                ),
-            });
+        let _lock = self.lock(Duration::from_millis(40))?;
+        let mut doc = match self.document(id) {
+            Ok(doc) => doc,
+            Err(error) => return Err(self.note_conflict(id, notes, &error)),
         };
-        tx.commit().map_err(message)?;
-        Ok(revision)
+        if doc.notes == notes {
+            return Ok(doc.header.datadeck.notes_revision);
+        }
+        if doc.notes != previous {
+            return Err(self.note_conflict(
+                id,
+                notes,
+                "Notes changed in another window or editor.",
+            ));
+        }
+        doc.notes = notes.to_owned();
+        doc.header.datadeck.notes_revision = doc.header.datadeck.notes_revision.saturating_add(1);
+        doc.write()
+            .map_err(|reason| self.note_conflict(id, notes, &reason))?;
+        Ok(doc.header.datadeck.notes_revision)
+    }
+
+    fn note_conflict(&self, id: i64, notes: &str, message: &str) -> String {
+        match self.recover_notes(id, notes) {
+            Ok(path) => format!("{message} Your draft was saved to {}", path.display()),
+            Err(error) => format!(
+                "{message} Could not save a recovery copy ({error}). Copy your draft before reloading."
+            ),
+        }
     }
 
     fn recover_notes(&self, id: i64, notes: &str) -> std::io::Result<PathBuf> {
-        let folder = self.path.with_file_name("Recovered Notes");
-        std::fs::create_dir_all(&folder)?;
+        let folder = self.path.join("Recovered Notes");
+        fs::create_dir_all(&folder)?;
+        if !fs::symlink_metadata(&folder)?.is_dir() {
+            return Err(std::io::Error::other("Invalid recovery folder"));
+        }
         let path = folder.join(format!("Bookmark {id} - {}.txt", self.recovery_session));
-        // Repeated flushes of this editor replace its one recovery file atomically.
-        let mut temporary = tempfile::NamedTempFile::new_in(&folder)?;
-        temporary.write_all(notes.as_bytes())?;
-        temporary.as_file().sync_all()?;
-        temporary.persist(&path)?;
+        let mut file = tempfile::NamedTempFile::new_in(&folder)?;
+        file.write_all(notes.as_bytes())?;
+        file.as_file().sync_all()?;
+        file.persist(&path)?;
         Ok(path)
     }
 
     pub fn update(&self, previous: &Bookmark, draft: BookmarkDraft) -> Result<Bookmark, String> {
         let draft = normalized(draft)?;
-        let mut conn = self.connect()?;
-        let tx = conn.transaction().map_err(message)?;
-        // Keep user-owned and fetched fields separate when the editor leaves them alone.
-        // This also preserves metadata that arrived while the edit form was open.
-        let changed = tx
-            .execute(
-                "UPDATE bookmarks SET
-                revision = revision + 1,
-                url = :url,
-                notes_revision = notes_revision + (NOT :keep_notes AND notes != :notes),
-                notes = CASE WHEN :keep_notes THEN notes ELSE :notes END,
-                kind_manual = kind_manual OR :kind_changed,
-                kind = CASE WHEN :kind_changed THEN :kind WHEN url = :url OR kind_manual THEN kind ELSE :url_kind END,
-                title = CASE WHEN :keep_title THEN title ELSE :title END,
-                files = CASE WHEN :keep_files THEN files ELSE :files END,
-                found = CASE WHEN :keep_files THEN found ELSE '[]' END,
-                fetched_title = CASE WHEN url = :url THEN fetched_title END,
-                image = CASE WHEN url = :url THEN image END,
-                images = CASE WHEN url = :url THEN images ELSE '[]' END,
-                visualizations = CASE WHEN url = :url THEN visualizations ELSE '[]' END
-             WHERE id = :id AND revision = :revision
-               AND (:keep_notes OR notes = :previous_notes OR notes = :notes)",
-                rusqlite::named_params! {
-                    ":url": draft.url,
-                    ":notes": draft.notes,
-                    ":keep_notes": draft.notes == previous.notes,
-                    ":previous_notes": previous.notes,
-                    ":kind": draft.kind.label(),
-                    ":kind_changed": draft.kind != previous.kind,
-                    ":url_kind": discovery::url_kind(&http_url(&draft.url)?).label(),
-                    ":title": draft.title,
-                    ":files": serde_json::to_string(&draft.files).map_err(message)?,
-                    ":keep_title": draft.url == previous.url && draft.title == previous.title,
-                    ":keep_files": draft.url == previous.url && draft.files == previous.files,
-                    ":id": previous.id,
-                    ":revision": previous.revision,
-                },
-            )
-            .map_err(write_error)?;
-        if changed == 0 {
+        let _lock = self.lock(Duration::from_secs(5))?;
+        let mut doc = self.document(previous.id)?;
+        let moved = draft.url != previous.url;
+        if doc.header.datadeck.revision != previous.revision
+            || (draft.notes != previous.notes
+                && doc.notes != previous.notes
+                && doc.notes != draft.notes)
+        {
             return Err(
                 "This bookmark changed in another window. Reload the library and try again.".into(),
             );
         }
-        let saved = bookmark(&tx, previous.id)?;
-        tx.commit().map_err(message)?;
-        Ok(saved)
+        if moved
+            && files::scan(&self.path)?
+                .0
+                .iter()
+                .any(|d| d.header.url == draft.url && d.header.datadeck.id != previous.id)
+        {
+            return Err("This URL is already in your library.".into());
+        }
+        let h = &mut doc.header;
+        if moved {
+            h.title = draft.title;
+            h.datadeck.auto_title = None;
+            h.datadeck.page_title = None;
+        } else if draft.title != previous.title {
+            h.set_manual_title(draft.title);
+        }
+        if moved || draft.files != previous.files {
+            h.set_files(draft.files, vec![])?;
+        }
+        if draft.kind != previous.kind {
+            h.kind = Some(draft.kind);
+            h.datadeck.auto_kind = None;
+        } else if moved && h.automatic_kind() {
+            h.set_auto_kind(discovery::url_kind(&http_url(&draft.url)?));
+        }
+        if moved {
+            h.url = draft.url;
+            h.thumbnail = None;
+            h.images.clear();
+            h.visualizations.clear();
+        }
+        if draft.notes != previous.notes && draft.notes != doc.notes {
+            doc.notes = draft.notes;
+            h.datadeck.notes_revision = h.datadeck.notes_revision.saturating_add(1);
+        }
+        h.datadeck.revision = h.datadeck.revision.saturating_add(1);
+        doc.write()?;
+        Ok(doc.bookmark())
     }
 
-    pub fn remove(&self, bookmark: &Bookmark) -> Result<(), String> {
-        let conn = self.connect()?;
-        let changed = conn
-            .execute(
-                "DELETE FROM bookmarks WHERE id=?1 AND revision=?2 AND notes_revision=?3",
-                params![bookmark.id, bookmark.revision, bookmark.notes_revision],
-            )
-            .map_err(message)?;
-        if changed == 0 {
+    pub fn remove(&self, previous: &Bookmark) -> Result<(), String> {
+        let _lock = self.lock(Duration::from_secs(5))?;
+        let doc = self.document(previous.id)?;
+        if doc.header.datadeck.revision != previous.revision
+            || doc.header.datadeck.notes_revision != previous.notes_revision
+            || doc.notes != previous.notes
+        {
             return Err(
                 "This bookmark changed in another window. Reload the library and try again.".into(),
             );
         }
-        Ok(())
+        doc.unchanged()?;
+        fs::remove_file(doc.path).map_err(message)
     }
 
     #[cfg(test)]
@@ -478,45 +517,47 @@ impl Library {
         self.enrich_reporting(id, |_| {})
     }
 
-    /// Runs on a worker. Commit discoveries before the optional thumbnail request begins.
     pub fn enrich_reporting(
         &self,
         id: i64,
         on_discovery: impl FnOnce(Bookmark),
     ) -> Result<Bookmark, String> {
-        let before = bookmark(&self.connect()?, id)?;
-        let source = http_url(&before.url)?;
+        let before = self.document(id)?;
+        let source = http_url(&before.header.url)?;
         let (metadata, photo) = preview::fetch(&source)?;
-        let images = serde_json::to_string(&metadata.images).map_err(message)?;
-        let mut conn = self.connect()?;
-        let tx = conn.transaction().map_err(message)?;
-        tx.execute(
-            "UPDATE bookmarks SET fetched_title = NULLIF(?1, ''), found = ?2, images = ?3, visualizations = ?4,
-                 kind = CASE WHEN NOT kind_manual AND ?7 != 'Other' THEN ?7 ELSE kind END
-             WHERE id = ?5 AND url = ?6",
-            params![metadata.title, serde_json::to_string(&metadata.files).map_err(message)?, images,
-                serde_json::to_string(&metadata.visualizations).map_err(message)?, id, before.url, metadata.kind.label()],
-        ).map_err(message)?;
-        let discovered = bookmark(&tx, id)?;
-        tx.commit().map_err(message)?;
-        let Some(photo) = photo.filter(|_| discovered.url == before.url) else {
+        let images = metadata.images;
+        let discovered = {
+            let _lock = self.lock(Duration::from_secs(5))?;
+            let mut doc = self.document(id)?;
+            if doc.header.url != before.header.url {
+                return Ok(doc.bookmark());
+            }
+            let h = &mut doc.header;
+            h.set_page_title(metadata.title);
+            h.set_files(h.user_files().to_vec(), metadata.files)?;
+            h.images.clone_from(&images);
+            h.visualizations = metadata.visualizations;
+            if h.automatic_kind() && metadata.kind != Kind::Other {
+                h.set_auto_kind(metadata.kind);
+            }
+            doc.write()?;
+            doc.bookmark()
+        };
+        let Some(photo) = photo else {
             return Ok(discovered);
         };
         on_discovery(discovered);
-
         let image = preview::fetch_image(&net::agent(&source), &photo);
-        let tx = conn.transaction().map_err(message)?;
-        if let Some(image) = image {
-            // A refreshed page can choose a different image while this network request is in flight.
-            tx.execute(
-                "UPDATE bookmarks SET image=?1 WHERE id=?2 AND url=?3 AND images=?4",
-                params![image, id, before.url, images],
-            )
-            .map_err(message)?;
+        let _lock = self.lock(Duration::from_secs(5))?;
+        let mut doc = self.document(id)?;
+        if let Some(image) = image
+            && doc.header.url == before.header.url
+            && doc.header.images == images
+        {
+            doc.header.thumbnail = Some(files::asset(&self.path, id, &image)?);
+            doc.write()?;
         }
-        let latest = bookmark(&tx, id)?;
-        tx.commit().map_err(message)?;
-        Ok(latest)
+        Ok(doc.bookmark())
     }
 }
 

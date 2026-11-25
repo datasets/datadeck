@@ -1,3 +1,4 @@
+mod files;
 mod notes;
 use crate::library::{Bookmark, BookmarkDraft, Kind, Library};
 use crate::source::{UrlEvent, UrlInput};
@@ -98,6 +99,11 @@ pub struct LibraryView {
     focus: FocusHandle,
     generation: u64,
     read_generation: u64,
+    reading: bool,
+    read_again: bool,
+    file_watch: Option<Task<()>>,
+    file_snapshot: Option<files::Snapshot>,
+    file_warning: Option<String>,
     preview_generation: u64,
     preview_states: HashMap<i64, PreviewState>,
     message: Option<String>,
@@ -142,6 +148,11 @@ impl LibraryView {
             focus: cx.focus_handle().tab_stop(true),
             generation: 0,
             read_generation: 0,
+            reading: false,
+            read_again: false,
+            file_watch: None,
+            file_snapshot: None,
+            file_warning: None,
             preview_generation: 0,
             preview_states: HashMap::new(),
             message: None,
@@ -156,33 +167,83 @@ impl LibraryView {
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.read_generation += 1;
+        if self.reading {
+            self.read_again = true;
+            return;
+        }
+        self.reading = true;
         let generation = self.read_generation;
-        let job = cx.background_executor().spawn(async {
-            let database = Library::local()?;
-            let rows = database.list()?;
-            Ok::<_, String>((database, rows))
+        let cached = self.database.clone();
+        let start_watching = self.file_watch.is_none();
+        let job = cx.background_executor().spawn(async move {
+            let database = match cached {
+                Some(store) => store,
+                None => Library::local()?,
+            };
+            let stamp = if start_watching {
+                files::snapshot(database.inbox_path()).ok()
+            } else {
+                None
+            };
+            let (rows, warnings) = database.list_with_warnings()?;
+            Ok::<_, String>((database, rows, stamp, warnings))
         });
         cx.spawn(async move |this, cx| {
             let result = job.await;
             this.update(cx, |this, cx| {
-                if generation != this.read_generation {
+                this.reading = false;
+                if std::mem::take(&mut this.read_again) || generation != this.read_generation {
+                    this.refresh(cx);
                     return;
                 }
                 this.ready = true;
                 match result {
-                    Ok((database, items)) => {
+                    Ok((database, items, stamp, warnings)) => {
+                        this.file_warning = warnings.first().map(|first| {
+                            if warnings.len() == 1 {
+                                first.clone()
+                            } else {
+                                format!("{} inbox files need attention. {}", warnings.len(), first)
+                            }
+                        });
                         this.database = Some(database);
-                        let mut previous: HashMap<_, _> =
-                            this.entries.drain(..).map(|e| (e.item.id, e)).collect();
-                        this.entries = items
-                            .into_iter()
-                            .map(|item| Entry::merge(previous.remove(&item.id), item))
-                            .collect();
+                        if this.file_watch.is_none() {
+                            this.file_snapshot = stamp;
+                        }
+                        // The settled files are authoritative, even when a hand edit did
+                        // not change a revision field or moved a capture date backwards.
+                        let mut refreshed: Vec<_> = items.into_iter().map(Entry::from).collect();
+                        if let Some(id) = this.selected
+                            && this.notes.get(&id).is_some_and(|n| n.has_draft(cx))
+                            && !refreshed.iter().any(|e| e.item.id == id)
+                            && let Some(index) = this.entries.iter().position(|e| e.item.id == id)
+                        {
+                            refreshed.push(this.entries.remove(index));
+                            this.message = Some(
+                                "The selected file changed on disk. Your note is still open."
+                                    .into(),
+                            );
+                        }
+                        this.entries = refreshed;
                         this.entries
                             .sort_unstable_by_key(|e| std::cmp::Reverse(e.order()));
-                        if this.current().is_none() {
-                            this.selected = this.entries.first().map(|entry| entry.item.id);
+                        if this
+                            .current()
+                            .is_none_or(|e| this.filter.is_some_and(|k| k != e.item.kind))
+                        {
+                            this.selected = this
+                                .entries
+                                .iter()
+                                .find(|e| this.filter.is_none_or(|k| e.item.kind == k))
+                                .map(|e| e.item.id);
+                        }
+                        if this
+                            .form
+                            .as_ref()
+                            .and_then(|f| f.original.as_ref())
+                            .is_some_and(|b| !this.entries.iter().any(|e| e.item.id == b.id))
+                        {
+                            this.message = Some("This bookmark was removed from the inbox.".into());
                         }
                         this.prepare_note(cx);
                     }

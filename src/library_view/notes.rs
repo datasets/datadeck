@@ -45,6 +45,10 @@ pub(super) struct Note {
 }
 
 impl Note {
+    pub(super) fn has_draft(&self, cx: &App) -> bool {
+        self.dirty || self.editor.read(cx).value() != self.latest
+    }
+
     fn flush(&mut self) -> Result<Option<i64>, String> {
         self.timer = None;
         if !self.dirty {
@@ -65,23 +69,17 @@ impl LibraryView {
         let Some(entry) = self.current() else { return };
         let id = entry.item.id;
         let revision = entry.item.notes_revision;
-        if self
-            .notes
-            .get(&id)
-            .is_some_and(|n| n.dirty || n.revision >= revision)
+        let value = &entry.item.notes;
+        if let Some(note) = self.notes.get(&id)
+            && (note.has_draft(cx) || (note.latest == *value && note.revision == revision))
         {
+            // Never replace a draft or a visible, not-yet-committed IME composition.
             return;
         }
         let Some(database) = self.database.clone() else {
             return;
         };
-        let value = entry.item.notes.clone();
-        let editor = cx.new(|cx| NotesEditor::new(value.clone(), cx));
-        cx.subscribe(&editor, move |this, editor, event, cx| match event {
-            NotesEvent::Changed => this.note_changed(id, editor.read(cx).value().to_owned(), cx),
-            NotesEvent::Capture(text) => this.capture_text(text, cx),
-        })
-        .detach();
+        let value = value.clone();
         let writer = Arc::new(Writer {
             database,
             id,
@@ -91,17 +89,35 @@ impl LibraryView {
                 revision,
             }),
         });
-        self.notes.insert(
-            id,
-            Note {
-                editor,
-                latest: value,
-                revision,
-                writer,
-                dirty: false,
-                timer: None,
-            },
-        );
+        if let Some(note) = self.notes.get_mut(&id) {
+            if note.latest != value {
+                note.editor
+                    .update(cx, |editor, cx| editor.set_text(value.clone(), cx));
+            }
+            note.latest = value;
+            note.revision = revision;
+            note.writer = writer;
+        } else {
+            let editor = cx.new(|cx| NotesEditor::new(value.clone(), cx));
+            cx.subscribe(&editor, move |this, editor, event, cx| match event {
+                NotesEvent::Changed => {
+                    this.note_changed(id, editor.read(cx).value().to_owned(), cx)
+                }
+                NotesEvent::Capture(text) => this.capture_text(text, cx),
+            })
+            .detach();
+            self.notes.insert(
+                id,
+                Note {
+                    editor,
+                    latest: value,
+                    revision,
+                    writer,
+                    dirty: false,
+                    timer: None,
+                },
+            );
+        }
         self.notes.retain(|key, n| *key == id || n.dirty);
     }
 
@@ -172,7 +188,9 @@ impl LibraryView {
         if let Some(note) = self.notes.get(&id)
             && let Some(entry) = self.entries.iter_mut().find(|e| e.item.id == id)
             && note.revision >= entry.item.notes_revision
+            && (note.revision != entry.item.notes_revision || note.latest != entry.item.notes)
         {
+            self.read_generation += 1;
             entry.item.notes_revision = note.revision;
             entry.item.notes.clone_from(&note.latest);
         }

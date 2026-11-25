@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::Connection;
 use std::io::{BufRead, BufReader, Cursor, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Barrier};
@@ -80,12 +81,7 @@ fn concurrent_saves_survive_and_conflicting_edits_are_detected() {
             .unwrap_err()
             .contains("changed")
     );
-    assert_eq!(
-        bookmark(&first.connect().unwrap(), rows[0].id)
-            .unwrap()
-            .notes,
-        "Newest idea"
-    );
+    assert_eq!(first.document(rows[0].id).unwrap().notes, "Newest idea");
 }
 
 #[test]
@@ -139,6 +135,14 @@ fn fetches_title_and_thumbnail_and_discovers_downloads_without_fetching_data() {
     assert_eq!(updated.files, enriched.files);
     assert_eq!(updated.title, enriched.title);
     assert!(updated.image.is_some());
+    let mut manual = draft(&updated.url);
+    manual.notes.clone_from(&updated.notes);
+    manual.files.clone_from(&updated.files);
+    manual.title = "Private title".into();
+    let titled = db.update(&updated, manual.clone()).unwrap();
+    manual.title.clear();
+    let updated = db.update(&titled, manual).unwrap();
+    assert_eq!(updated.title, "Café & Tea");
     let moved = db
         .update(&updated, draft("https://example.test/another-source"))
         .unwrap();
@@ -188,13 +192,13 @@ fn note_saves_survive_navigation_and_cannot_overwrite_another_windows_edit() {
 
     let version = db.save_notes(a.id, &a.notes, "new").unwrap();
     assert!(version > a.notes_revision);
-    assert!(!dir.path().join("Recovered Notes").exists());
+    assert!(!path.join("Recovered Notes").exists());
     let first_conflict = other.save_notes(a.id, &a.notes, "stale note").unwrap_err();
     let final_conflict = other
         .save_notes(a.id, &a.notes, "complete losing draft")
         .unwrap_err();
     assert_eq!(first_conflict, final_conflict);
-    let recovered: Vec<_> = std::fs::read_dir(dir.path().join("Recovered Notes"))
+    let recovered: Vec<_> = std::fs::read_dir(path.join("Recovered Notes"))
         .unwrap()
         .collect();
     assert_eq!(recovered.len(), 1);
@@ -348,7 +352,7 @@ fn legacy_database_migrates_once_and_recaptures_move_only_the_original() {
             let barrier = barrier.clone();
             thread::spawn(move || {
                 barrier.wait();
-                Library::open(path).unwrap()
+                Library::open_migrating(path.with_file_name("inbox"), &path).unwrap()
             })
         })
         .collect();
@@ -376,8 +380,14 @@ fn legacy_database_migrates_once_and_recaptures_move_only_the_original() {
         (again.notes, again.notes_revision),
         (seen.notes, seen.notes_revision)
     );
-    let ordered = Library::open(path).unwrap().list().unwrap();
-    assert_eq!(ordered.iter().map(|b| b.id).collect::<Vec<_>>(), [1, 3, 2]);
+    let ordered = Library::open_migrating(path.with_file_name("inbox"), &path)
+        .unwrap()
+        .list()
+        .unwrap();
+    assert_eq!(
+        ordered.iter().map(|b| b.id).collect::<Vec<_>>(),
+        [1, new.id, 2]
+    );
 }
 
 #[test]
@@ -473,4 +483,106 @@ fn classifies_only_recognized_sources_and_honors_manually_selected_other() {
     assert_eq!(dataset.kind, Kind::Dataset);
     assert_eq!(dataset.files, [format!("{host}/download1")]);
     server.join().unwrap();
+}
+
+#[test]
+fn markdown_is_canonical_and_external_edits_preserve_unknown_keys_and_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let inbox = dir.path().join("inbox");
+    let db = Library::open(inbox.clone()).unwrap();
+    let note = inbox.join("Handmade.markdown");
+    std::fs::write(&note, "---\nurl: https://example.org/report\ntitle: Research report\ntags: [soil, policy]\ndatadeck:\n  custom: mine\n---\n\n# My note\n").unwrap();
+    std::fs::write(
+        inbox.join("README.md"),
+        "Notes without a link are allowed here.",
+    )
+    .unwrap();
+    std::fs::write(inbox.join("Broken.md"), "---\nurl: [bad\n---\nuntouched").unwrap();
+    let (items, warnings) = db.list_with_warnings().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert_eq!(items.len(), 1);
+    let hand = &items[0];
+    assert_eq!(
+        (hand.path.as_path(), hand.notes.as_str()),
+        (note.as_path(), "# My note\n")
+    );
+    assert!(hand.captured_at.is_none());
+    let saved = db
+        .save_notes(hand.id, &hand.notes, "First paragraph\n\n**Second**\n")
+        .unwrap();
+    let serialized = std::fs::read_to_string(&note).unwrap();
+    assert!(serialized.contains("tags:") && serialized.contains("custom: mine"));
+    assert!(serialized.ends_with("First paragraph\n\n**Second**\n"));
+    std::fs::write(
+        &note,
+        serialized.replace("First paragraph", "An external edit"),
+    )
+    .unwrap();
+    let external = Library::open(inbox.clone())
+        .unwrap()
+        .list()
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(external.id, hand.id);
+    assert!(external.notes_revision > saved);
+    assert!(
+        db.save_notes(
+            hand.id,
+            "First paragraph\n\n**Second**\n",
+            "Concurrent note"
+        )
+        .is_err()
+    );
+    let (recaptured, inserted) = db
+        .capture(BookmarkDraft {
+            url: hand.url.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(!inserted);
+    assert_eq!(recaptured.notes, external.notes);
+    assert_eq!(
+        std::fs::read_to_string(inbox.join("Broken.md")).unwrap(),
+        "---\nurl: [bad\n---\nuntouched"
+    );
+    assert!(!dir.path().join("library.sqlite3").exists());
+}
+
+#[test]
+fn markdown_paths_and_externally_authored_links_are_safe_to_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Library::open(dir.path().join("inbox")).unwrap();
+    let path = db.inbox_path().join("links.md");
+    std::fs::write(&path,"---\nurl: https://example.org/story\nfiles: ['javascript:alert(1)', '/tmp/survey.csv', 'https://example.org/data.tsv', 'relative.csv']\nthumbnail: ../private.txt\nimages: [{title: Bad, url: 'file:///private.txt'}, {title: Good, url: 'https://example.org/figure.svg'}]\nvisualizations: [{title: Ignore, url: 'javascript:alert(1)'}]\n---\n\nHello").unwrap();
+    std::fs::write(dir.path().join("private.txt"), b"private").unwrap();
+    let item = db.list().unwrap().pop().unwrap();
+    assert!(item.image.is_none() && item.visualizations.is_empty());
+    assert_eq!(item.images.len(), 1);
+    assert_eq!(
+        item.files,
+        ["/tmp/survey.csv", "https://example.org/data.tsv"]
+    );
+    let bare = db.inbox_path().join("raw.MD");
+    std::fs::write(
+        &bare,
+        "Collect data from https://example.org/raw and keep this context.",
+    )
+    .unwrap();
+    let second = db
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|b| b.path == bare)
+        .unwrap();
+    assert!(second.notes.starts_with("Collect data"));
+    assert_eq!(second.url, "https://example.org/raw");
+    std::fs::rename(&bare, db.inbox_path().join("renamed.md")).unwrap();
+    db.save_notes(second.id, &second.notes, "Renamed document")
+        .unwrap();
+    assert!(
+        std::fs::read_to_string(db.inbox_path().join("renamed.md"))
+            .unwrap()
+            .ends_with("Renamed document")
+    );
 }
