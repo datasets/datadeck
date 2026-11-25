@@ -8,7 +8,7 @@ Watch the [app overview](videos/overview.mp4), [inspection tutorial](videos/insp
 
 ## 1. Open the survey
 
-On the opening screen, choose **Choose file…** (or **Open file** from an open table) and select `examples/field-survey.csv`. From the repository root, the equivalent command is:
+From the Library or an open table, choose **Open file**. In the empty dataset viewer, choose **Choose file…**. Select `examples/field-survey.csv`. From the repository root, the equivalent command is:
 
 ```sh
 ./target/release/datadeck examples/field-survey.csv

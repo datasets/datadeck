@@ -1,6 +1,6 @@
 # DataDeck
 
-DataDeck is a native GPUI desktop viewer for CSV, TSV, Parquet and Excel. Open a local file or paste its HTTP(S) download URL, inspect a distribution beside the table, and query the open dataset. Choose **Explore the field notes example** on the opening screen to try it with a small fictional survey.
+DataDeck is a native GPUI desktop viewer for CSV, TSV, Parquet and Excel. Open a local file or paste its HTTP(S) download URL, inspect a distribution beside the table, and query the open dataset. Choose **Explore the field notes example** in the empty **Dataset viewer** to try it with a small fictional survey.
 
 [Start the pictured cleaning tutorial](docs/quickstart.md) · [Watch the overview](docs/videos/overview.mp4) · [Watch inspection](docs/videos/inspect.mp4) · [Watch cleaning and replay](docs/videos/clean.mp4)
 
@@ -30,7 +30,7 @@ cargo run --locked -- https://datahub.io/core/co2-ppm/_r/-/data/co2-annmean-mlo.
 The release build places `datadeck` in `target/release/`. Run the commands below from the repository root after building with `scripts/package-macos.sh`. For the Finder bundle, the same executable is `DataDeck.app/Contents/MacOS/datadeck`.
 
 ```sh
-./target/release/datadeck                                        # Open the viewer
+./target/release/datadeck                                        # Open your recent Library
 ./target/release/datadeck --library                              # Browse saved web links
 ./target/release/datadeck examples/field-survey.csv              # Open one file
 ./target/release/datadeck examples                               # Browse a folder or checkout
@@ -44,15 +44,19 @@ For a `datadeck` command on your Rust toolchain’s PATH, run `cargo install --p
 
 Use a single file or direct download URL as the input to `run`. It writes the full query result as CSV on standard output. The replay options are `--sheet NAME`, `--delimiter comma|tab|semicolon|pipe`, and `--header yes|no`. A folder path opens the resource browser in the desktop app. Filenames containing spaces work inside shell quotes.
 
-## Bookmark datasets, data stories, and visualizations
+## Capture a link and jot down a note
 
-Drag a browser link onto the DataDeck window, paste a single URL with the grid focused, or open **Library** to enter a link. Finder internet shortcuts (`.webloc`) work too. Saving a link keeps your open dataset and query available under **Back to viewer**. To view a direct CSV, Parquet, or Excel download immediately, use **Open URL**. An ordinary HTML page entered there goes to the Library.
+Open DataDeck and paste a link, or drag one from your browser onto the window. It goes straight into your local capture log. Paste a sentence and a link together and DataDeck extracts the address and keeps your words as the note. A spreadsheet block pasted into the viewer still opens as a table.
 
-Use the Library to keep a note, assign a category, revisit the original page, or open a linked data file in the viewer. DataDeck saves the URL locally before it requests page details. Pages that expose a title, a supported preview image, or direct links to CSV, TSV, Excel, and Parquet files can fill out the bookmark automatically. The saved entry remains available if the page is offline or supplies no metadata. On macOS the collection lives in `~/Library/Application Support/DataDeck/library.sqlite3`.
+The large notes area is ready while the spinner is running. Type, paste several paragraphs, or use your Mac’s Dictation shortcut. Notes save automatically. **⌘L** moves focus to the capture field for the next link. [Using macOS Dictation](https://support.apple.com/guide/mac-help/mh40584/mac)
 
-![The Library with a saved temperature visualization, a personal note and a linked CSV](docs/images/bookmark-library.png)
+In the background DataDeck reads the page title, looks for preview images, chart links and embeds, and finds linked CSV, TSV, Excel and Parquet files. Choose a discovered data file to open it in the viewer. Images, visualizations and **Open page** take you to the original in your browser. The preview uses the HTML the site returns. A site that generates links only after running JavaScript may supply fewer results.
 
-The example shows a bookmarked [Our World in Data temperature chart](https://ourworldindata.org/grapher/temperature-anomaly).
+Reopen DataDeck to see the newest captures first. Capturing a URL again moves that entry to the top and keeps its notes. Reading or editing an older note leaves its place in the log intact. The URL, notes, discovered links and cached thumbnail live in `~/Library/Application Support/DataDeck/library.sqlite3` on macOS. Finder internet shortcuts (`.webloc`) work too.
+
+![The capture log with notes, a page preview and discovered links](docs/images/bookmark-library.png)
+
+[Watch the narrated capture walkthrough](docs/videos/library.mp4).
 
 ## Open and inspect
 
