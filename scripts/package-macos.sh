@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-cd "$(dirname "$0")/.."
+CDPATH= cd -- "$(dirname "$0")/.."
 case "${1-}" in
     --dev) profile=debug; shift ;;
     "") profile=release ;;

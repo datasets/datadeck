@@ -18,7 +18,7 @@ fi
 version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw "$bundle/Contents/Info.plist")
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Expected a three-part application version, found $version."
 mkdir -p "$output"
-output=$(cd "$output" && pwd)
+output=$(CDPATH= cd -- "$output" && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/datadeck-dmg.XXXXXXXX")
 keychain="$work/release.keychain-db"
 mount="$work/mount"
