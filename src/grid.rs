@@ -620,10 +620,11 @@ impl Grid {
                         } else {
                             "Text"
                         };
+                        let scope = crate::count_label(profile.rows, "row");
                         if self.rows.len() > profile.rows {
-                            format!("{kind} · First {} rows", profile.rows)
+                            format!("{kind} · First {scope}")
                         } else {
-                            format!("{kind} · {} rows", profile.rows)
+                            format!("{kind} · {scope}")
                         }
                     }),
             )

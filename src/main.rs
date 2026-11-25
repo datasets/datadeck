@@ -91,6 +91,10 @@ fn number(value: usize) -> String {
     }
     text
 }
+fn count_label(value: usize, unit: &str) -> String {
+    let suffix = if value == 1 { "" } else { "s" };
+    format!("{} {unit}{suffix}", number(value))
+}
 fn button(id: &'static str, label: &'static str, primary: bool) -> Stateful<Div> {
     div()
         .id(id)
@@ -896,17 +900,15 @@ impl Render for Deck {
                 .child(if self.showing_result && self.result_count > 10000 {
                     format!("First 10,000 of {} rows", number(self.result_count))
                 } else {
-                    format!(
-                        "{} rows",
-                        number(if self.showing_result {
-                            self.result_count
-                        } else {
-                            self.rows
-                        })
-                    )
+                    let count = if self.showing_result {
+                        self.result_count
+                    } else {
+                        self.rows
+                    };
+                    count_label(count, "row")
                 })
                 .when(!self.showing_result, |s| {
-                    s.child(format!("{} columns", self.columns.len()))
+                    s.child(count_label(self.columns.len(), "column"))
                 })
                 .child(div().flex_1())
                 .when(self.csv_format.is_some(), |s| {
