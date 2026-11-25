@@ -2,9 +2,11 @@ mod cli;
 mod data;
 mod grid;
 mod navigation;
+mod overview;
 mod query;
 mod source;
 mod theme;
+mod views;
 mod watch;
 mod workspace;
 use theme::Theme;
@@ -25,6 +27,7 @@ actions!(
         OpenFile,
         OpenFolder,
         OpenUrl,
+        PasteData,
         ShowQuery,
         LargerType,
         SmallerType,
@@ -32,7 +35,8 @@ actions!(
         EditorialTheme,
         MonochromeTheme,
         Quit,
-        CloseWindow
+        CloseWindow,
+        Quickstart
     ]
 );
 const PAPER: u32 = 0xffffff;
@@ -42,6 +46,7 @@ const LINE: u32 = 0xdedede;
 
 const MONO: &str = "IBM Plex Mono";
 const EXAMPLE: &str = "example:field-notes.csv";
+const CLIPBOARD: &str = "clipboard:";
 
 fn preference_path(key: &str) -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|dir| dir.join("DataDeck").join(key))
@@ -62,6 +67,9 @@ fn save_preference(key: &str, value: &str) -> std::io::Result<()> {
 fn caption(source: &str) -> String {
     if source == EXAMPLE {
         return "field-notes.csv".into();
+    }
+    if source == CLIPBOARD {
+        return "Clipboard".into();
     }
     source
         .split(['?', '#'])
@@ -114,11 +122,14 @@ enum LoadMessage {
 }
 fn read_table(
     source: &str,
+    clipboard: Option<Arc<String>>,
     sheet: Option<&str>,
     options: data::CsvOptions,
     emit: impl FnMut(data::Update) -> bool,
 ) -> Result<(), String> {
-    if source == EXAMPLE {
+    if let Some(text) = clipboard {
+        data::load_csv_with_options(text.as_bytes(), options, emit)
+    } else if source == EXAMPLE {
         data::load_csv_with_options(
             &include_bytes!("../examples/field-notes.csv")[..],
             options,
@@ -135,9 +146,13 @@ struct Deck {
     theme: Theme,
     grid: Entity<Grid>,
     result: Entity<Grid>,
+    overview: Entity<overview::Overview>,
+    overview_open: bool,
+    last_inspector_open: bool,
     url: Entity<UrlInput>,
     editor: Entity<UrlInput>,
     source: String,
+    clipboard: Option<Arc<String>>,
     columns: Vec<String>,
     sheets: Vec<String>,
     sheet: Option<String>,
@@ -204,15 +219,40 @@ impl Deck {
             grid.set_theme(theme, cx);
             grid
         };
+        let grid = cx.new(new_grid);
+        let result = cx.new(new_grid);
+        let overview = cx.new(overview::Overview::new);
+        cx.subscribe_in(&overview, window, |s, _, event, w, cx| {
+            let overview::OverviewEvent::Select(index) = event;
+            s.overview_open = false;
+            s.active_grid()
+                .update(cx, |g, cx| g.inspect_column(*index, w, cx));
+            cx.notify();
+        })
+        .detach();
+        for entity in [&grid, &result] {
+            cx.observe(entity, |s, _, cx| {
+                let open = s.active_grid().read(cx).inspector_open();
+                if open != s.last_inspector_open {
+                    s.last_inspector_open = open;
+                    cx.notify();
+                }
+            })
+            .detach();
+        }
         Self {
             theme,
             font_size,
             focus,
-            grid: cx.new(new_grid),
-            result: cx.new(new_grid),
+            grid,
+            result,
+            overview,
+            overview_open: false,
+            last_inspector_open: true,
             url,
             editor,
             source: String::new(),
+            clipboard: None,
             columns: vec![],
             sheets: vec![],
             sheet: None,
@@ -243,6 +283,9 @@ impl Deck {
     }
     fn resize_type(&mut self, value: u8, cx: &mut Context<Self>) {
         self.font_size = value.clamp(9, 20);
+        self.overview.update(cx, |v, cx| {
+            v.set_appearance(self.font_size.into(), self.theme, cx)
+        });
         for grid in [&self.grid, &self.result] {
             grid.update(cx, |grid, cx| grid.set_font_size(self.font_size.into(), cx));
         }
@@ -253,6 +296,9 @@ impl Deck {
     }
     fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
         self.theme = theme;
+        self.overview.update(cx, |v, cx| {
+            v.set_appearance(self.font_size.into(), self.theme, cx)
+        });
         for grid in [&self.grid, &self.result] {
             grid.update(cx, |grid, cx| grid.set_theme(theme, cx));
         }
@@ -276,6 +322,23 @@ impl Deck {
             .ok();
         })
         .detach()
+    }
+    fn paste_data(&mut self, _: &PasteData, window: &mut Window, cx: &mut Context<Self>) {
+        let text = cx.read_from_clipboard().and_then(|item| item.text());
+        let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
+            self.error = Some("Copy spreadsheet cells or delimited text, then paste again.".into());
+            cx.notify();
+            return;
+        };
+
+        self.discovery = None;
+        self.watcher = None;
+        self.workspace = None;
+        self.import_open = false;
+        self.csv_options = Default::default();
+        self.clipboard = Some(Arc::new(text));
+        self.focus.focus(window);
+        self.read_source(CLIPBOARD.into(), None, false, cx);
     }
     fn url(&mut self, _: &OpenUrl, w: &mut Window, cx: &mut Context<Self>) {
         self.query_open = false;
@@ -327,10 +390,15 @@ impl Deck {
             self.refresh_source(source, sheet, cx);
             return;
         }
+        if source != CLIPBOARD {
+            self.clipboard = None;
+        }
+        let clipboard = self.clipboard.clone();
         let options = self.csv_options;
         self.worker = None;
         self.query_task = None;
         self.querying = false;
+        self.overview_open = false;
         self.focus_grid = true;
         self.ready = false;
         self.query_open = false;
@@ -357,7 +425,7 @@ impl Deck {
         std::thread::spawn(move || {
             drop(previous_batches);
             let emit = |u| tx.send_blocking(LoadMessage::Update(u)).is_ok();
-            let result = read_table(&source, sheet.as_deref(), options, emit);
+            let result = read_table(&source, clipboard, sheet.as_deref(), options, emit);
             let _ = tx.send_blocking(LoadMessage::Finish(result));
         });
         self.worker = Some(cx.spawn(async move |this, cx| {
@@ -514,6 +582,7 @@ impl Deck {
                             }
                         }
                     }
+                    this.update_overview(cx);
                     cx.notify();
                 })
                 .ok();
@@ -616,6 +685,10 @@ impl Render for Deck {
                 .child(
                     button("url", "Open URL", false)
                         .on_click(cx.listener(|s, _, w, c| s.url(&OpenUrl, w, c))),
+                )
+                .child(
+                    button("paste", "Paste data", false)
+                        .on_click(cx.listener(|s, _, w, c| s.paste_data(&PasteData, w, c))),
                 );
         }
         if self.ready {
@@ -631,7 +704,9 @@ impl Render for Deck {
             .overflow_hidden()
             .bg(rgb(PAPER))
             .text_color(rgb(INK))
+            .key_context("DataDeck")
             .track_focus(&self.focus)
+            .on_action(cx.listener(Self::paste_data))
             .on_action(cx.listener(Self::choose))
             .on_action(cx.listener(Self::choose_folder))
             .on_action(cx.listener(Self::url))
@@ -701,6 +776,7 @@ impl Render for Deck {
                         .child(
                             div()
                                 .flex()
+                                .flex_wrap()
                                 .gap_2()
                                 .child(
                                     button("start-file", "Choose file…", true).on_click(
@@ -713,7 +789,10 @@ impl Render for Deck {
                                 .child(
                                     button("start-url", "Open URL…", false)
                                         .on_click(cx.listener(|s, _, w, c| s.url(&OpenUrl, w, c))),
-                                ),
+                                )
+                                .child(button("start-paste", "Paste data", false).on_click(
+                                    cx.listener(|s, _, w, c| s.paste_data(&PasteData, w, c)),
+                                )),
                         )
                         .child(
                             div()
@@ -765,6 +844,7 @@ impl Render for Deck {
                         button("source-tab", "Source", !self.showing_result).on_click(cx.listener(
                             |s, _, _, cx| {
                                 s.showing_result = false;
+                                s.update_overview(cx);
                                 cx.notify()
                             },
                         )),
@@ -773,6 +853,7 @@ impl Render for Deck {
                         button("result-tab", "Result", self.showing_result).on_click(cx.listener(
                             |s, _, _, cx| {
                                 s.showing_result = true;
+                                s.update_overview(cx);
                                 cx.notify()
                             },
                         )),
@@ -784,15 +865,18 @@ impl Render for Deck {
                     ),
             );
         }
+        if self.ready {
+            root = root.child(self.view_switcher(cx));
+        }
         root.child(
             div()
                 .flex_1()
                 .min_h_0()
                 .overflow_hidden()
-                .child(if self.showing_result {
-                    self.result.clone()
+                .child(if self.overview_open {
+                    self.overview.clone().into_any_element()
                 } else {
-                    self.grid.clone()
+                    self.active_grid().into_any_element()
                 }),
         )
         .child(
@@ -895,7 +979,7 @@ fn main() {
         .is_some_and(|s| matches!(s.as_str(), "-h" | "--help"))
     {
         println!(
-            "datadeck [FILE_OR_URL]\ndatadeck run RECIPE.sql FILE_OR_URL [--sheet SHEET] [--delimiter comma|tab|semicolon|pipe] [--header yes|no]"
+            "DataDeck\n\nOpen the desktop viewer:\n  datadeck [FILE | FOLDER | DATAPACKAGE | URL]\n\nRun a saved SQL recipe and write CSV to stdout:\n  datadeck run RECIPE.sql FILE_OR_URL [--sheet NAME] [--delimiter comma|tab|semicolon|pipe] [--header yes|no]\n\nExamples:\n  datadeck examples\n  datadeck examples/field-survey.csv\n  datadeck run examples/clean-field-survey.sql examples/field-survey.csv > cleaned.csv"
         );
         return;
     }
@@ -928,11 +1012,15 @@ fn main() {
             KeyBinding::new("secondary-shift-o", OpenFolder, None),
             KeyBinding::new("secondary-o", OpenFile, None),
             KeyBinding::new("secondary-l", OpenUrl, None),
+            KeyBinding::new("secondary-v", PasteData, Some("DataDeck && !DatasetInput")),
             KeyBinding::new("secondary-k", ShowQuery, None),
             KeyBinding::new("secondary-w", CloseWindow, None),
             KeyBinding::new("secondary-q", Quit, None),
         ]);
         cx.on_action(|_: &Quit, cx| cx.quit());
+        cx.on_action(|_: &Quickstart, cx| {
+            cx.open_url("https://github.com/datasets/datadeck/blob/main/docs/quickstart.md")
+        });
         cx.set_menus(vec![
             Menu {
                 name: "DataDeck".into(),
@@ -944,6 +1032,7 @@ fn main() {
                     MenuItem::action("Open File…", OpenFile),
                     MenuItem::action("Open Folder…", OpenFolder),
                     MenuItem::action("Open URL…", OpenUrl),
+                    MenuItem::action("Paste Data", PasteData),
                     MenuItem::action("Query", ShowQuery),
                     MenuItem::action("Close Window", CloseWindow),
                 ],
@@ -958,6 +1047,10 @@ fn main() {
                     MenuItem::action("Editorial Theme", EditorialTheme),
                     MenuItem::action("Monochrome Theme", MonochromeTheme),
                 ],
+            },
+            Menu {
+                name: "Help".into(),
+                items: vec![MenuItem::action("Cleaning tutorial and videos", Quickstart)],
             },
         ]);
         cx.on_window_closed(|cx| {
@@ -999,4 +1092,41 @@ fn main() {
         .expect("open DataDeck window");
         cx.activate(true);
     })
+}
+
+#[cfg(test)]
+mod clipboard_tests {
+    use super::{CLIPBOARD, data, read_table};
+    use std::sync::Arc;
+
+    #[test]
+    fn clipboard_snapshot_can_be_reparsed_without_reading_a_file() {
+        let source = Arc::new(String::from("site\tvisits\nFen\t2\nLake\t3\n"));
+        for (header, expected_count) in [(true, 2), (false, 3)] {
+            let mut rows = 0;
+            let mut format = None;
+            read_table(
+                CLIPBOARD,
+                Some(source.clone()),
+                None,
+                data::CsvOptions {
+                    header: Some(header),
+                    delimiter: None,
+                },
+                |event| {
+                    match event {
+                        data::Update::CsvFormat { delimiter, header } => {
+                            format = Some((delimiter, header))
+                        }
+                        data::Update::Rows(batch) => rows += batch.len(),
+                        _ => (),
+                    }
+                    true
+                },
+            )
+            .unwrap();
+            assert_eq!(rows, expected_count);
+            assert_eq!(format, Some((b'\t', header)));
+        }
+    }
 }

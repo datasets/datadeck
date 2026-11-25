@@ -1,0 +1,9 @@
+station,habitat,individuals,import_note
+" Alder Fen ",Wetland,8,import A
+"Birch Copse ",WOODLAND,14,import A
+Chalk Down," grassland ",6,import A
+Dove Reach,River,2,import A
+"Alder Fen ",wetland,11,import B
+" Birch Copse",Woodland,9,import B
+Chalk Down,Grassland,,count missing
+Dove Reach,RIVER,3,import B

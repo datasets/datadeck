@@ -4,7 +4,7 @@ pub const SAMPLE_LIMIT: usize = 1024;
 const BINS: usize = 20;
 
 #[derive(Default)]
-pub(super) struct Profile {
+pub(crate) struct Profile {
     pub rows: usize,
     pub missing: usize,
     pub distinct: usize,
@@ -12,7 +12,7 @@ pub(super) struct Profile {
     pub distribution: Option<Distribution>,
 }
 
-pub(super) struct Distribution {
+pub(crate) struct Distribution {
     pub min: String,
     pub max: String,
     pub bins: [usize; BINS],

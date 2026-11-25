@@ -1,9 +1,11 @@
-mod profile;
+pub(crate) mod profile;
 mod rail;
+mod selection;
 
 use crate::theme::Theme;
 use gpui::{FontWeight, prelude::*, *};
 use profile::{Profile, SAMPLE_LIMIT, numeric};
+use selection::{Cell, Rectangle};
 use std::{
     ops::{Index, Range},
     sync::Arc,
@@ -48,6 +50,7 @@ const MUTED: u32 = 0x686868;
 const RULE: u32 = 0xeeeeee;
 const MONO: &str = "IBM Plex Mono";
 pub const DEFAULT_FONT_SIZE: f32 = 11.;
+pub type RowBatch = Arc<Vec<Vec<String>>>;
 const WIDTH_SAMPLE: usize = 32;
 
 /// View state for the same source across a background reload.
@@ -55,6 +58,7 @@ const WIDTH_SAMPLE: usize = 32;
 pub struct Bookmark {
     column: Option<String>,
     row: Option<usize>,
+    anchor: Option<(usize, String)>,
     inspector: bool,
     left: Pixels,
     top: Pixels,
@@ -70,6 +74,7 @@ pub struct Grid {
     numeric_columns: Vec<bool>,
     column: usize,
     row: Option<usize>,
+    anchor: Option<Cell>,
     inspector: bool,
     interacted: bool,
     profile: Profile,
@@ -91,6 +96,7 @@ impl Grid {
             numeric_columns: vec![],
             column: 0,
             row: None,
+            anchor: None,
             inspector: true,
             interacted: false,
             profile: Profile::default(),
@@ -136,10 +142,45 @@ impl Grid {
         cx.notify();
     }
 
+    pub fn inspector_open(&self) -> bool {
+        self.inspector
+    }
+
+    pub fn set_inspector(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.inspector != open {
+            self.inspector = open;
+            cx.notify();
+        }
+    }
+
+    pub fn inspect_column(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index < self.columns.len() {
+            self.inspector = true;
+            self.select(index, None, false, window, cx);
+            self.reveal_column(index);
+        }
+    }
+
+    /// The overview profiles at most SAMPLE_LIMIT rows. Share only batches intersecting
+    /// that prefix; callers truncate the final batch at the sample boundary.
+    pub fn overview_data(&self) -> (Vec<String>, Vec<RowBatch>, usize) {
+        let batches = self
+            .rows
+            .batches
+            .iter()
+            .take_while(|(start, _)| *start < SAMPLE_LIMIT)
+            .map(|(_, batch)| batch.clone())
+            .collect();
+        (self.columns.clone(), batches, self.rows.len())
+    }
+
     pub fn bookmark(&self) -> Bookmark {
         Bookmark {
             column: self.columns.get(self.column).cloned(),
             row: self.row,
+            anchor: self
+                .anchor
+                .map(|cell| (cell.row, self.columns[cell.column].clone())),
             inspector: self.inspector,
             left: -self.horizontal.offset().x,
             top: -self.vertical.0.borrow().base_handle.offset().y,
@@ -162,6 +203,12 @@ impl Grid {
         self.row = book
             .row
             .and_then(|row| self.rows.len().checked_sub(1).map(|last| row.min(last)));
+        self.anchor = book.anchor.as_ref().and_then(|(row, name)| {
+            Some(Cell {
+                column: self.columns.iter().position(|c| c == name)?,
+                row: (*row).min(self.rows.len().checked_sub(1)?),
+            })
+        });
         self.inspector = book.inspector;
         self.profile_column();
         let vertical = self.vertical.0.borrow().base_handle.clone();
@@ -190,7 +237,7 @@ impl Grid {
         self.rows = Rows::default();
         self.column = 0;
         self.row = None;
-        self.inspector = true;
+        self.anchor = None;
         self.interacted = false;
         self.profile = Profile::default();
         self.hovered_bin = None;
@@ -271,14 +318,33 @@ impl Grid {
         self.profile = Profile::read(self.rows.iter().take(SAMPLE_LIMIT), self.column);
     }
 
+    fn rectangle(&self) -> Option<Rectangle> {
+        let cursor = Cell {
+            row: self.row?,
+            column: self.column,
+        };
+        Some(Rectangle::between(self.anchor.unwrap_or(cursor), cursor))
+    }
+
     fn select(
         &mut self,
         column: usize,
         row: Option<usize>,
+        extend: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.interacted = true;
+        if row.is_some() && extend {
+            self.anchor = self.anchor.or_else(|| {
+                self.row.map(|prev| Cell {
+                    row: prev,
+                    column: self.column,
+                })
+            });
+        } else {
+            self.anchor = None;
+        }
         if column != self.column {
             self.column = column;
             self.profile_column();
@@ -295,13 +361,20 @@ impl Grid {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
         if (mods.platform || mods.control) && key == "c" {
-            if let Some(value) = self.row.and_then(|r| self.rows[r].get(self.column)) {
-                cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
+            if let Some(rect) = self.rectangle() {
+                cx.write_to_clipboard(ClipboardItem::new_string(rect.text(&self.rows)));
             }
             cx.stop_propagation();
             return;
         }
-        if mods.modified() {
+        let extend = mods.shift && matches!(key, "up" | "down" | "left" | "right");
+        if mods.control || mods.platform || mods.alt || mods.function || (mods.shift && !extend) {
+            return;
+        }
+        if matches!(key, "enter" | "i" | "escape") {
+            self.inspector = key != "escape" && !self.inspector;
+            cx.notify();
+            cx.stop_propagation();
             return;
         }
         let mut col = self.column;
@@ -320,22 +393,30 @@ impl Grid {
             "pagedown" => row = (row + page).min(last),
             "home" => row = 0,
             "end" => row = last,
-            "enter" | "i" => self.inspector = !self.inspector,
-            "escape" => self.inspector = false,
             _ => return,
         }
-        self.select(col, (!self.rows.is_empty()).then_some(row), window, cx);
+        self.select(
+            col,
+            (!self.rows.is_empty()).then_some(row),
+            extend,
+            window,
+            cx,
+        );
         self.vertical.scroll_to_item(row, ScrollStrategy::Center);
+        self.reveal_column(col);
+        cx.stop_propagation();
+    }
+
+    fn reveal_column(&self, col: usize) {
         let left = -f32::from(self.horizontal.offset().x);
         let width = f32::from(self.horizontal.bounds().size.width);
-        let target = if self.edges[col] < left {
+        let target = if width <= 0. || self.edges[col] < left {
             self.edges[col]
         } else {
             left.max(self.edges[col + 1] - width)
         };
         self.horizontal
             .set_offset(point(px(-target.max(0.)), px(0.)));
-        cx.stop_propagation();
     }
 
     fn visible_columns(&self, viewport: f32) -> Range<usize> {
@@ -381,6 +462,7 @@ impl Grid {
         } else {
             line = line.child(div().flex_shrink_0().w(px(self.edges[columns.start])));
         }
+        let selection = self.rectangle().filter(|rect| !rect.single());
         for col in columns {
             let highlighted = self.column == col && (self.inspector || self.row.is_some());
             let active = row.is_some() && highlighted && self.row == row;
@@ -431,15 +513,30 @@ impl Grid {
                     el.border_b_1()
                         .border_color(rgb(self.theme.selection_rule()))
                 })
+                .when_some(
+                    row.and_then(|r| {
+                        selection
+                            .filter(|rect| rect.contains(r, col))
+                            .map(|rect| (r, rect))
+                    }),
+                    |el, (r, rect)| {
+                        el.bg(Hsla::from(rgb(self.theme.selection_rule())).opacity(0.14))
+                            .border_color(rgb(self.theme.selection_rule()))
+                            .when(r == rect.top, |el| el.border_t_1())
+                            .when(r == rect.bottom, |el| el.border_b_1())
+                            .when(col == rect.left, |el| el.border_l_1())
+                            .when(col == rect.right, |el| el.border_r_1())
+                    },
+                )
                 .when(active, |el| {
                     el.border_1().border_color(rgb(self.theme.selection_rule()))
                 })
                 .when(empty, |el| el.text_color(rgb(MUTED)))
-                .on_click(cx.listener(move |this, _, window, cx| {
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     if header {
                         this.inspector = true;
                     }
-                    this.select(col, row, window, cx);
+                    this.select(col, row, event.modifiers().shift, window, cx);
                 }))
                 .child(div().truncate().child(label));
             line = line.child(cell);

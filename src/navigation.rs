@@ -248,11 +248,12 @@ impl Deck {
         cx: &mut Context<Self>,
     ) {
         let options = self.csv_options;
+        let clipboard = self.clipboard.clone();
         let (tx, rx) = async_channel::bounded(1);
         self.status = "Refreshing…".into();
         std::thread::spawn(move || {
             let mut snapshot = Snapshot::default();
-            let read = read_table(&source, sheet.as_deref(), options, |u| {
+            let read = read_table(&source, clipboard, sheet.as_deref(), options, |u| {
                 snapshot.push(u);
                 !tx.is_closed()
             });
@@ -300,6 +301,7 @@ impl Deck {
                             s.sql = None;
                             s.showing_result = false;
                             s.result.update(cx, |g, cx| g.reset(vec![], cx));
+                            s.update_overview(cx);
                         }
                         cx.notify();
                     }
