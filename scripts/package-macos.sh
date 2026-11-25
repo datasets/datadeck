@@ -32,7 +32,7 @@ install -m 755 "$target_dir/$profile/datadeck" "$contents/MacOS/datadeck"
 install -m 644 assets/DataDeck.icns "$contents/Resources/DataDeck.icns"
 install -m 644 scripts/Info.plist "$contents/Info.plist"
 install -m 644 assets/fonts/OFL.txt "$contents/Resources/IBM-Plex-License.txt"
-min_os=$(/usr/bin/vtool -show-build "$contents/MacOS/datadeck" | awk '/minos/ {print $2; exit}')
+min_os=$(/usr/bin/vtool -show-build "$contents/MacOS/datadeck" | awk '$1 == "minos" || $1 == "version" {print $2; exit}')
 /usr/bin/plutil -replace CFBundleShortVersionString -string "$version" "$contents/Info.plist"
 /usr/bin/plutil -replace CFBundleVersion -string "$version" "$contents/Info.plist"
 if [ -n "$min_os" ]; then

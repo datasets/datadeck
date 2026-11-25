@@ -4,6 +4,10 @@ DataDeck is a native GPUI desktop viewer for CSV, TSV, Parquet and Excel. Open a
 
 [Start the pictured cleaning tutorial](docs/quickstart.md) · [Watch the overview](docs/videos/overview.mp4) · [Watch inspection](docs/videos/inspect.mp4) · [Watch cleaning and replay](docs/videos/clean.mp4)
 
+## Install a tagged release on macOS
+
+Open the [DataDeck releases page](https://github.com/datasets/datadeck/releases), choose the macOS 15+ disk image for your Mac (Apple silicon or Intel), open it, and drag DataDeck into Applications. Published disk images require Developer ID signing and Apple notarization. The [release guide](docs/releases.md) covers version tags, GitHub Actions, signing credentials, and preview builds. Until the first signed release is published, build from source below.
+
 ## Run on macOS
 
 Install Rust and Xcode, then run from the repository root:
@@ -27,6 +31,7 @@ The release build places `datadeck` in `target/release/`. Run the commands below
 
 ```sh
 ./target/release/datadeck                                        # Open the viewer
+./target/release/datadeck --library                              # Browse saved web links
 ./target/release/datadeck examples/field-survey.csv              # Open one file
 ./target/release/datadeck examples                               # Browse a folder or checkout
 ./target/release/datadeck /path/to/datapackage.yml               # Open a package
@@ -39,13 +44,23 @@ For a `datadeck` command on your Rust toolchain’s PATH, run `cargo install --p
 
 Use a single file or direct download URL as the input to `run`. It writes the full query result as CSV on standard output. The replay options are `--sheet NAME`, `--delimiter comma|tab|semicolon|pipe`, and `--header yes|no`. A folder path opens the resource browser in the desktop app. Filenames containing spaces work inside shell quotes.
 
+## Bookmark datasets, data stories, and visualizations
+
+Drag a browser link onto the DataDeck window, paste a single URL with the grid focused, or open **Library** to enter a link. Finder internet shortcuts (`.webloc`) work too. Saving a link keeps your open dataset and query available under **Back to viewer**. To view a direct CSV, Parquet, or Excel download immediately, use **Open URL**. An ordinary HTML page entered there goes to the Library.
+
+Use the Library to keep a note, assign a category, revisit the original page, or open a linked data file in the viewer. DataDeck saves the URL locally before it requests page details. Pages that expose a title, a supported preview image, or direct links to CSV, TSV, Excel, and Parquet files can fill out the bookmark automatically. The saved entry remains available if the page is offline or supplies no metadata. On macOS the collection lives in `~/Library/Application Support/DataDeck/library.sqlite3`.
+
+![The Library with a saved temperature visualization, a personal note and a linked CSV](docs/images/bookmark-library.png)
+
+The example shows a bookmarked [Our World in Data temperature chart](https://ourworldindata.org/grapher/temperature-anomaly).
+
 ## Open and inspect
 
 Drop a file or directory on the window, choose **Open file** (⌘O) or **Open folder** (⇧⌘O), or paste a direct HTTP(S) download link into **Open URL** (⌘L). DataHub resource links work directly. The planned dataset-page browser and publishing flow are described in [DataHub integration](docs/datahub.md).
 
 **CSV and TSV.** DataDeck samples the opening records to guess comma, semicolon, tab or pipe delimiters and whether the first record contains headers. Quoted multiline fields, UTF-8 BOMs and Excel-style `sep=` directives are supported. Short rows have empty trailing cells. Long rows add named columns even when they appear late in a file. The status bar indicates extra fields. Click **CSV settings** to correct the delimiter or header guess, or choose **Detect again**. For ambiguous all-text data, check the header setting.
 
-**Excel.** Each worksheet has a named tab above the grid. Click a tab to inspect or query that sheet. Its first row supplies the headers. Scroll horizontally through the tabs in a workbook with many sheets.
+**Excel.** Each worksheet has a named tab above the grid. Click a tab to inspect or query that sheet. Its first row supplies the headers. Scroll horizontally through the tabs in a workbook with many sheets. [See an example workbook with two sheets](docs/images/workbook-sheets.png).
 
 **Folders and Data Packages.** Open a folder, Git checkout, or a `datapackage.json`, `datapackage.yml` or `datapackage.yaml` file. A descriptor supplies the resource list in package order and can reference local files or HTTP(S) downloads. Without one, DataDeck searches for supported tables and skips hidden, dependency and build directories. Click the folder and resource name above the grid to switch tables. Each file in a multipart resource is available individually.
 

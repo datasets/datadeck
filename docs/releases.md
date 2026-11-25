@@ -1,6 +1,6 @@
 # Install DataDeck on macOS
 
-Open the latest release and download the disk image for your Mac. Choose **arm64** if About This Mac lists an Apple chip, or **x86_64** if it lists an Intel processor. Release builds require macOS 15 or later. Open the disk image, drag **DataDeck** into **Applications**, then eject the image and launch DataDeck. Public downloads carry a Developer ID signature and an Apple notarization ticket. [DataDeck releases](https://github.com/datasets/datadeck/releases)
+When a tagged release is available, download the disk image for your Mac. Before the first signed release, you can [build and run DataDeck from source](../README.md#run-on-macos). Choose **arm64** if About This Mac lists an Apple chip, or **x86_64** if it lists an Intel processor. Release builds require macOS 15 or later. Open the disk image, drag **DataDeck** into **Applications**, then eject the image and launch DataDeck. Public downloads carry a Developer ID signature and an Apple notarization ticket. [DataDeck releases](https://github.com/datasets/datadeck/releases)
 
 To verify a download, save `SHA256SUMS` and your DMG in the same folder. Run the command below there. The downloaded image should show `OK`.
 
@@ -21,7 +21,7 @@ scripts/macos-dmg.sh preview target/release/DataDeck.app "$(uname -m)" /tmp/data
 
 ## Set up public release signing
 
-1. Enroll the publishing individual or organization in the Apple Developer Program. Apple lists its annual membership at US$99 or local equivalent and provides fee waivers for eligible organizations. The Account Holder creates a **Developer ID Application** certificate using a certificate signing request from a trusted Mac. Install the certificate where its matching private key was generated. In Keychain Access, export the signing identity (certificate and private key) as a password-protected `.p12`. The signing runner needs a valid certificate chain, including the issuing Developer ID intermediate. [Apple enrollment](https://developer.apple.com/help/account/membership/program-enrollment/) · [Create a Developer ID certificate](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/) · [Apple certificate authorities](https://www.apple.com/certificateauthority/)
+1. Enroll the publishing individual or organization in the Apple Developer Program. Apple lists its annual membership at US$99 or local equivalent and provides fee waivers for eligible organizations. The Account Holder creates a **Developer ID Application** certificate using a certificate signing request from a trusted Mac. Install the certificate where its matching private key was generated. In Keychain Access, export the signing identity (certificate and private key) as a password-protected `.p12`. Choose the modern G2 certificate for a new identity. CI can install the checksum-verified G2 intermediate from Apple when the runner needs it. Include the issuing intermediate when exporting a legacy identity. [Apple enrollment](https://developer.apple.com/help/account/membership/program-enrollment/) · [Create a Developer ID certificate](https://developer.apple.com/help/account/certificates/create-developer-id-certificates/) · [Apple certificate authorities](https://www.apple.com/certificateauthority/)
 2. Enable App Store Connect API access for the team. Under **Users and Access → Integrations → App Store Connect API → Team Keys**, an Account Holder or Admin generates a dedicated key for notarization. Use the least privileged role your team permits for notarization. Record its key ID and issuer ID, download the private `.p8` once, and keep the original in your encrypted secret store. Team keys can cover multiple apps on the same team. [Create and manage App Store Connect keys](https://developer.apple.com/help/app-store-connect/get-started/app-store-connect-api/)
 3. Create a GitHub Actions environment named `macos-release`. Restrict deployment **tags** to `v*`, and configure repository rules so only authorized maintainers can create, update or delete matching tags. A tagged commit runs its own build and signing scripts. Add the five environment secrets below. Keep `macos-preview` free of signing credentials. [Manage environment protection and secrets](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments) · [GitHub rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
 
@@ -44,7 +44,7 @@ CI imports the signing identity into a temporary per-job keychain. The app recei
 
 ## Publish a version
 
-Update the package version in `Cargo.toml`, refresh `Cargo.lock`, and merge the release commit. Push an annotated tag matching `vMAJOR.MINOR.PATCH` exactly. For example, a maintainer releasing version 0.2.0 would run:
+Update the package version in `Cargo.toml`, refresh `Cargo.lock`, and merge the release commit. Push an annotated tag matching `vMAJOR.MINOR.PATCH` exactly. The following example publishes version 0.2.0.
 
 ```sh
 git tag -a v0.2.0 -m "DataDeck 0.2.0"

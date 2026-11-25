@@ -23,12 +23,17 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/datadeck-dmg.XXXXXXXX")
 keychain="$work/release.keychain-db"
 mount="$work/mount"
 mounted=false
+keychain_list_changed=false
 cleanup() {
+    set +e
     if $mounted; then /usr/bin/hdiutil detach "$mount" >/dev/null || /usr/bin/hdiutil detach -force "$mount" >/dev/null; fi
+    if $keychain_list_changed; then /usr/bin/security list-keychains -d user -s "${original_keychains[@]}"; fi
     if [[ -f $keychain ]]; then /usr/bin/security delete-keychain "$keychain" >/dev/null; fi
     rm -rf "$work"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 mkdir "$work/image" "$mount"
 /usr/bin/ditto "$bundle" "$work/image/DataDeck.app"
 ln -s /Applications "$work/image/Applications"
@@ -45,14 +50,31 @@ else
         printf '%s' "$APPLE_NOTARY_KEY_BASE64" | /usr/bin/base64 -D > "$work/notary.p8"
     )
     password=$(/usr/bin/openssl rand -hex 32)
+    original_keychains=()
+    while IFS= read -r item; do
+        original_keychains+=("$item")
+    done < <(/usr/bin/security list-keychains -d user | sed -n 's/^ *"\(.*\)" *$/\1/p')
+    (( ${#original_keychains[@]} > 0 )) || die 'Unable to read the user keychain search list.'
     /usr/bin/security create-keychain -p "$password" "$keychain"
+    keychain_list_changed=true
+    /usr/bin/security list-keychains -d user -s "$keychain" "${original_keychains[@]}"
     /usr/bin/security set-keychain-settings -lut 7200 "$keychain"
     /usr/bin/security unlock-keychain -p "$password" "$keychain"
     /usr/bin/security import "$work/identity.p12" -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" -k "$keychain" -T /usr/bin/codesign
     /usr/bin/security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
     rm "$work/identity.p12"
     unset password APPLE_DEVELOPER_ID_P12_BASE64 APPLE_DEVELOPER_ID_P12_PASSWORD APPLE_NOTARY_KEY_BASE64
-    identity=$(/usr/bin/security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2}')
+    signing_identity() {
+        /usr/bin/security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application:/ {print $2}'
+    }
+    identity=$(signing_identity)
+    if [[ -z $identity ]]; then
+        # A new runner may lack the intermediate for modern Developer ID certificates.
+        /usr/bin/curl -fsSL --retry 3 https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$work/intermediate.cer"
+        printf '%s  %s\n' f16cd3c54c7f83cea4bf1a3e6a0819c8aaa8e4a1528fd144715f350643d2df3a "$work/intermediate.cer" | /usr/bin/shasum -a 256 -c -
+        /usr/bin/security add-certificates -k "$keychain" "$work/intermediate.cer"
+        identity=$(signing_identity)
+    fi
     [[ $identity =~ ^[a-fA-F0-9]{40}$ ]] || die 'A single valid Developer ID Application identity and its certificate chain are required.'
     /usr/bin/codesign --force --sign "$identity" --keychain "$keychain" --options runtime --timestamp "$app"
 fi
@@ -87,7 +109,7 @@ binary="$installed/Contents/MacOS/datadeck"
 [[ $(/usr/bin/plutil -extract CFBundleIdentifier raw "$plist") == org.datasets.datadeck ]] || die 'Unexpected bundle identifier.'
 [[ $(/usr/bin/plutil -extract CFBundleShortVersionString raw "$plist") == "$version" ]] || die 'Bundle version changed.'
 [[ $(/usr/bin/lipo -archs "$binary") == "$arch" ]] || die 'Wrong CPU architecture in the image.'
-deployment=$(/usr/bin/vtool -show-build "$binary" | awk '/minos/ {print $2; exit}')
+deployment=$(/usr/bin/vtool -show-build "$binary" | awk '$1 == "minos" || $1 == "version" {print $2; exit}')
 [[ -n $deployment && $(/usr/bin/plutil -extract LSMinimumSystemVersion raw "$plist") == "$deployment" ]] || die 'The declared minimum macOS version differs from the binary.'
 if [[ -n ${MACOSX_DEPLOYMENT_TARGET:-} && $deployment != "$MACOSX_DEPLOYMENT_TARGET" ]]; then
     die "The binary targets macOS $deployment; expected $MACOSX_DEPLOYMENT_TARGET."

@@ -21,3 +21,7 @@ Support quick, predictable questions about row counts, common categories and num
 ## Repeatable wrangling
 
 Use SQL projection for choosing columns, functions such as trim for cleaning text, and ORDER BY for repeatable ordering. Save the last successful query as a plain SQL file. The desktop and CLI use the same importer, type conversion and execution code. This gives the user small reusable primitives while keeping the main window focused on inspection.
+
+## Bookmark Library
+
+A page about a dataset raises two different questions. “Why did I save this?” needs a title, a source and room for a personal note. “What’s in the file?” needs a grid and a profile. The Library keeps the first question one click from the viewer and offers linked files as the path to the second. Dropping a link saves it immediately, which also works for sites that block previews. Switching surfaces retains the open table, query and selection. Publication to DataHub would be a separate, deliberate action on a saved collection.
